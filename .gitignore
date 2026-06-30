@@ -1,0 +1,12 @@
+build/
+xcb-build/
+.opencode/
+*.o
+*.a
+!third_party/**/*.a
+.cache/
+compile_commands.json
+.vscode/
+.idea/
+*.swp
+*~
