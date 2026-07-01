@@ -30,7 +30,7 @@ public:
             if (!filter.empty() && test.name.find(filter) == std::string::npos) {
                 continue;
             }
-            std::cout << "Running: " << test.name << "... ";
+            std::cout << "Running: " << test.name << "... " << std::flush;
             try {
                 test.func();
                 std::cout << "PASSED" << std::endl;

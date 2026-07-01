@@ -30,4 +30,4 @@ jobs:
 
       - name: Run X11 integration smoke test (Xvfb)
         working-directory: build
-        run: xvfb-run -a env -u WAYLAND_DISPLAY ./test_x11_integration
+        run: timeout 20s xvfb-run -a env -u WAYLAND_DISPLAY ./test_x11_integration
