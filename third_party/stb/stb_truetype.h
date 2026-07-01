@@ -1410,7 +1410,18 @@ static int stbtt_InitFont_internal(stbtt_fontinfo *info, unsigned char *data, in
       stbtt_uint32 cff;
 
       cff = stbtt__find_table(data, fontstart, "CFF ");
-      if (!cff) return 0;
+      if (!cff) {
+         // stilus patch: bitmap-only fonts (Noto Color Emoji) have neither
+         // 'glyf' nor 'CFF '. Accept them if a color-bitmap table is present;
+         // outline-consuming routines will return empty results, but cmap +
+         // hmtx (validated above) let has_glyph / advance still work.
+         if (stbtt__find_table(data, fontstart, "CBDT") &&
+             stbtt__find_table(data, fontstart, "CBLC")) {
+            info->cff = stbtt__new_buf(NULL, 0);
+            goto stilus_bitmap_only_init;
+         }
+         return 0;
+      }
 
       info->fontdicts = stbtt__new_buf(NULL, 0);
       info->fdselect = stbtt__new_buf(NULL, 0);
@@ -1452,6 +1463,7 @@ static int stbtt_InitFont_internal(stbtt_fontinfo *info, unsigned char *data, in
       stbtt__buf_seek(&b, charstrings);
       info->charstrings = stbtt__cff_get_index(&b);
    }
+stilus_bitmap_only_init: ;
 
    t = stbtt__find_table(data, fontstart, "maxp");
    if (t)

@@ -7,6 +7,7 @@
 #include <cstring>
 #include <ctime>
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -71,6 +72,15 @@ Window::~Window() {
     if (cursor_shape_device_) {
         wl::Message m(cursor_shape_device_,
                       wl::wp_cursor_shape_device_v1_req::destroy);
+        d_.send(m);
+    }
+    if (viewport_) {
+        wl::Message m(viewport_, wl::wp_viewport_req::destroy);
+        d_.send(m);
+    }
+    if (fractional_scale_object_) {
+        wl::Message m(fractional_scale_object_,
+                      wl::wp_fractional_scale_v1_req::destroy);
         d_.send(m);
     }
     if (toplevel_decoration_) {
@@ -191,6 +201,15 @@ bool Window::init() {
                 } else if (interface == "zxdg_decoration_manager_v1"
                            && !decoration_manager_) {
                     bind(std::min<uint32_t>(version, 1u), decoration_manager_);
+                } else if (interface == "wl_data_device_manager"
+                           && !data_device_manager_) {
+                    bind(std::min<uint32_t>(version, 3u), data_device_manager_);
+                } else if (interface == "wp_viewporter"
+                           && !viewporter_) {
+                    bind(std::min<uint32_t>(version, 1u), viewporter_);
+                } else if (interface == "wp_fractional_scale_manager_v1"
+                           && !fractional_scale_manager_) {
+                    bind(std::min<uint32_t>(version, 1u), fractional_scale_manager_);
                 } else if (interface == "wp_cursor_shape_manager_v1"
                            && !cursor_shape_manager_) {
                     bind(std::min<uint32_t>(version, 1u), cursor_shape_manager_);
@@ -266,6 +285,44 @@ bool Window::init() {
                 update_scale_();
             }
         });
+
+    // -- wp_viewporter + wp_fractional_scale for HiDPI ----------------------
+    // These are optional; if the compositor doesn't advertise them we fall
+    // through to the integer wl_surface.set_buffer_scale path.
+    if (viewporter_) {
+        viewport_ = d_.new_id();
+        wl::Message m(viewporter_, wl::wp_viewporter_req::get_viewport);
+        m.new_id(viewport_);
+        m.object(surface_);
+        d_.send(m);
+    }
+    if (fractional_scale_manager_) {
+        fractional_scale_object_ = d_.new_id();
+        {
+            wl::Message m(fractional_scale_manager_,
+                          wl::wp_fractional_scale_manager_v1_req::get_fractional_scale);
+            m.new_id(fractional_scale_object_);
+            m.object(surface_);
+            d_.send(m);
+        }
+        d_.set_handler(fractional_scale_object_,
+            [this](wl::ObjectId, uint16_t op, const uint8_t* pl, size_t n,
+                   const int*, size_t) {
+                if (op == wl::wp_fractional_scale_v1_evt::preferred_scale) {
+                    wl::Reader r{pl, n};
+                    uint32_t x120 = r.u32();      // scale × 120
+                    if (x120 == 0) return;
+                    float s = float(x120) / 120.0f;
+                    if (!has_preferred_fractional_ || s != scale_f_) {
+                        has_preferred_fractional_ = true;
+                        scale_f_ = s;
+                        last_attached_ = nullptr;   // buffer dimensions change
+                        damage_.mark_full();
+                        needs_redraw_ = true;
+                    }
+                }
+            });
+    }
 
     // -- xdg_surface + xdg_toplevel ------------------------------------------
     xdg_surface_ = d_.new_id();
@@ -720,9 +777,18 @@ void Window::update_scale_() {
         int os = outputs_[it->second].scale;
         if (os > s) s = os;
     }
-    if (s != scale_) {
-        scale_ = s;
-        // Buffer dimensions changed — drop any retained buffer.
+    bool changed = (s != scale_);
+    scale_ = s;
+    // While the compositor is driving us through wp_fractional_scale_v1 its
+    // preferred_scale wins; the integer output scale is only informational.
+    if (!has_preferred_fractional_) {
+        float sf = float(s);
+        if (sf != scale_f_) {
+            scale_f_ = sf;
+            changed = true;
+        }
+    }
+    if (changed) {
         last_attached_ = nullptr;
         damage_.mark_full();
         needs_redraw_ = true;
@@ -739,12 +805,35 @@ void Window::paint_frame_() {
 
     const int tb = csd_titlebar_h_eff_();
     const int surf_h = height_ + tb;
-    int phys_w = width_  * scale_;
-    int phys_h = surf_h  * scale_;
+    // Effective float scale — fractional if we have a preferred_scale, else
+    // the integer scale from wl_output. Physical buffer sizes always round
+    // up so we never lose a pixel to truncation.
+    const float sf = scale_f_ > 0 ? scale_f_ : 1.0f;
+    const bool  use_viewport = has_preferred_fractional_ && viewport_ != 0;
+    int phys_w = int(std::ceil(width_  * sf));
+    int phys_h = int(std::ceil(surf_h  * sf));
     ShmBuffer* b = acquire_buffer_(phys_w, phys_h);
     if (!b) return;
 
-    if (applied_scale_ != scale_) {
+    if (use_viewport) {
+        // Viewport path: buffer_scale stays at 1 (default). We size the
+        // logical surface via the viewport destination so the compositor
+        // maps our physical-pixel buffer to the correct on-screen extent.
+        if (applied_scale_ != 1) {
+            wl::Message m(surface_, wl::wl_surface_req::set_buffer_scale);
+            m.i32(1);
+            d_.send(m);
+            applied_scale_ = 1;
+        }
+        if (applied_viewport_w_ != width_ || applied_viewport_h_ != surf_h) {
+            wl::Message m(viewport_, wl::wp_viewport_req::set_destination);
+            m.i32(width_);
+            m.i32(surf_h);
+            d_.send(m);
+            applied_viewport_w_ = width_;
+            applied_viewport_h_ = surf_h;
+        }
+    } else if (applied_scale_ != scale_) {
         wl::Message m(surface_, wl::wl_surface_req::set_buffer_scale);
         m.i32(scale_);
         d_.send(m);
@@ -770,15 +859,15 @@ void Window::paint_frame_() {
     // canvas's initial identity transform; only the scale is applied below
     // for the user content area.
     if (csd_enabled_) {
-        if (scale_ != 1) canvas.push_transform(Affine::scale(float(scale_)));
+        if (sf != 1.0f) canvas.push_transform(Affine::scale(sf));
         draw_csd_titlebar_(canvas);
-        if (scale_ != 1) canvas.pop_transform();
+        if (sf != 1.0f) canvas.pop_transform();
     }
 
     // Step 2: position user-area drawing below the titlebar and scale to
     // physical pixels.
-    if (scale_ != 1) canvas.push_transform(Affine::scale(float(scale_)));
-    if (tb)          canvas.push_transform(Affine::translate(0, float(tb)));
+    if (sf != 1.0f) canvas.push_transform(Affine::scale(sf));
+    if (tb)         canvas.push_transform(Affine::translate(0, float(tb)));
 
     if (full) {
         // Clear only the user area (titlebar already painted).
@@ -793,8 +882,8 @@ void Window::paint_frame_() {
         canvas.pop_clip();
     }
 
-    if (tb)          canvas.pop_transform();
-    if (scale_ != 1) canvas.pop_transform();
+    if (tb)         canvas.pop_transform();
+    if (sf != 1.0f) canvas.pop_transform();
 
     // Attach.
     {
@@ -809,14 +898,18 @@ void Window::paint_frame_() {
                                 ? wl::wl_surface_req::damage_buffer
                                 : wl::wl_surface_req::damage;
     // damage_buffer takes buffer-local pixel coords; damage takes surface
-    // (logical) coords. Scale accordingly.
-    const int dmg_scale = (dmg_op == wl::wl_surface_req::damage_buffer)
-                              ? scale_ : 1;
+    // (logical) coords. For buffer coords we multiply by the effective
+    // float scale (matching how we sized the buffer above); we ceil to
+    // keep fractional-scale rects flush with the buffer edge.
+    const bool use_buf_dmg = (dmg_op == wl::wl_surface_req::damage_buffer);
+    auto scale_dim = [&](int v) {
+        return use_buf_dmg ? int(std::ceil(v * sf)) : v;
+    };
     if (full) {
         wl::Message m(surface_, dmg_op);
         m.i32(0); m.i32(0);
-        m.i32(width_  * dmg_scale);
-        m.i32(surf_h  * dmg_scale);
+        m.i32(scale_dim(width_));
+        m.i32(scale_dim(surf_h));
         d_.send(m);
     } else {
         for (const Rect& r : damage_.rects()) {
@@ -824,10 +917,10 @@ void Window::paint_frame_() {
             if (ir.w <= 0 || ir.h <= 0) continue;
             wl::Message m(surface_, dmg_op);
             // damage rects are in user-area coords; shift by tb in surface.
-            int dx = ir.x * dmg_scale;
-            int dy = (ir.y + tb) * dmg_scale;
-            int dw = ir.w * dmg_scale;
-            int dh = ir.h * dmg_scale;
+            int dx = scale_dim(ir.x);
+            int dy = scale_dim(ir.y + tb);
+            int dw = scale_dim(ir.w);
+            int dh = scale_dim(ir.h);
             m.i32(dx); m.i32(dy); m.i32(dw); m.i32(dh);
             d_.send(m);
         }
@@ -909,6 +1002,41 @@ void Window::setup_seat_(uint32_t caps) {
     // Text Input (IME) - initialized when keyboard cap appears
     if ((caps & wl::wl_seat_caps::keyboard) && !text_input_ && text_input_manager_) {
         setup_text_input_();
+    }
+    // Clipboard: any seat that has either input capability can carry a
+    // selection, so create the data_device as soon as we know the seat is
+    // there. The manager may be null if the compositor doesn't offer copy/
+    // paste at all, in which case clipboard_* just no-op.
+    if (data_device_manager_ && !data_device_) {
+        data_device_ = d_.new_id();
+        {
+            wl::Message m(data_device_manager_,
+                          wl::wl_data_device_manager_req::get_data_device);
+            m.new_id(data_device_);
+            m.object(seat_);
+            d_.send(m);
+        }
+        d_.set_handler(data_device_,
+            [this](wl::ObjectId, uint16_t op, const uint8_t* pl, size_t n,
+                   const int*, size_t) {
+                wl::Reader r{pl, n};
+                if (op == wl::wl_data_device_evt::data_offer) {
+                    // A new offer object was introduced; store its id and
+                    // attach a handler that just records advertised mimes
+                    // (we only accept text/plain;charset=utf-8, so no state
+                    // needs to be tracked beyond "it exists").
+                    uint32_t new_offer = r.u32();
+                    d_.set_handler(new_offer,
+                        [](wl::ObjectId, uint16_t, const uint8_t*, size_t,
+                           const int*, size_t) { /* mimes ignored */ });
+                } else if (op == wl::wl_data_device_evt::selection) {
+                    // A selection changed. The argument is either an offer
+                    // id or 0 (cleared).
+                    uint32_t offer = r.u32();
+                    current_data_offer_ = offer;
+                }
+                // enter/leave/motion/drop: DnD, unused for now.
+            });
     }
 }
 
@@ -1269,7 +1397,31 @@ void Window::ime_set_enabled(bool enable) {
 bool Window::pump() {
     if (!open_) return false;
 
+    // Fire any pending animation-frame callback just before repaint, so the
+    // callback's state updates land in the frame we're about to draw. The
+    // callback receives dt in seconds since the previous raf (0 the first
+    // time); it may re-arm itself for the next frame.
+    if (raf_cb_) {
+        uint64_t t = now_ms();
+        float dt = raf_last_ms_ == 0 ? 0.0f : float(t - raf_last_ms_) / 1000.0f;
+        raf_last_ms_ = t;
+        auto cb = std::move(raf_cb_);
+        raf_cb_ = nullptr;
+        cb(dt);
+        // The callback commonly requests a repaint (directly or via re-arming
+        // raf, which also marks a redraw). If it didn't, treat the raf itself
+        // as a repaint signal so animations progress even without explicit
+        // request_redraw().
+        needs_redraw_ = true;
+    } else {
+        // No animation in flight — reset the timestamp so the next raf gets
+        // dt=0 rather than a huge value spanning idle time.
+        raf_last_ms_ = 0;
+    }
+
     if (needs_redraw_) paint_frame_();
+    // After the parent is up-to-date, let any child popups repaint.
+    paint_popups_();
 
     // Fire any due key repeats before blocking on the socket.
     if (held_evkey_ && repeat_rate_ > 0) {
@@ -1301,6 +1453,114 @@ bool Window::pump() {
         return false;
     }
     return open_;
+}
+
+// ---------------------------------------------------------------------------
+// Clipboard (text/plain;charset=utf-8 only)
+// ---------------------------------------------------------------------------
+namespace {
+constexpr const char* kUtf8Mime = "text/plain;charset=utf-8";
+}
+
+void Window::clipboard_set_text(std::string_view utf8) {
+    if (!data_device_manager_ || !data_device_) return;
+    clipboard_local_text_.assign(utf8);
+
+    // Create a fresh source and offer our single MIME type on it.
+    wl::ObjectId src = d_.new_id();
+    {
+        wl::Message m(data_device_manager_,
+                      wl::wl_data_device_manager_req::create_data_source);
+        m.new_id(src);
+        d_.send(m);
+    }
+    {
+        wl::Message m(src, wl::wl_data_source_req::offer);
+        m.string(kUtf8Mime);
+        d_.send(m);
+    }
+    d_.set_handler(src,
+        [this, src](wl::ObjectId id, uint16_t op, const uint8_t* pl, size_t n,
+                    const int* fds, size_t nfds) {
+            wl::Reader r{pl, n};
+            if (op == wl::wl_data_source_evt::send && nfds >= 1) {
+                // Compositor: "someone is pasting; write to this fd."
+                r.string();               // mime — always our advertised one
+                int fd = fds[0];
+                const std::string& s = clipboard_local_text_;
+                size_t off = 0;
+                while (off < s.size()) {
+                    ssize_t w = ::write(fd, s.data() + off, s.size() - off);
+                    if (w < 0) { if (errno == EINTR) continue; break; }
+                    off += size_t(w);
+                }
+                ::close(fd);
+            } else if (op == wl::wl_data_source_evt::cancelled) {
+                // Another app took the selection — drop our local ownership.
+                if (current_selection_source_ == src) {
+                    current_selection_source_ = 0;
+                    clipboard_local_text_.clear();
+                }
+                wl::Message m(id, wl::wl_data_source_req::destroy);
+                d_.send(m);
+            }
+        });
+    current_selection_source_ = src;
+
+    // set_selection needs a "recent input event" serial. The last pointer
+    // enter / keyboard press we saw is fine; compositors that are strict
+    // about this (KWin) accept any of them.
+    uint32_t serial = last_pointer_serial_
+                        ? last_pointer_serial_
+                        : last_pointer_enter_serial_;
+    wl::Message m(data_device_, wl::wl_data_device_req::set_selection);
+    m.object(src);
+    m.u32(serial);
+    d_.send(m);
+}
+
+std::string Window::clipboard_get_text() {
+    // Fast path: we own the current selection.
+    if (current_selection_source_ != 0 && !clipboard_local_text_.empty())
+        return clipboard_local_text_;
+    if (!current_data_offer_) return {};
+
+    // Ask the source (via the compositor) to write the data into one end
+    // of a pipe; we read from the other end. Non-blocking reads with a
+    // short overall deadline so we don't hang the UI on a broken source.
+    int fds[2];
+    if (::pipe2(fds, O_CLOEXEC | O_NONBLOCK) < 0) return {};
+
+    {
+        wl::Message m(current_data_offer_, wl::wl_data_offer_req::receive);
+        m.string(kUtf8Mime);
+        m.fd(fds[1]);
+        d_.send(m);
+    }
+    ::close(fds[1]);
+
+    std::string out;
+    const int timeout_ms_per_wait = 100;
+    const int overall_budget_ms   = 500;
+    int spent = 0;
+    for (;;) {
+        char buf[4096];
+        ssize_t r = ::read(fds[0], buf, sizeof(buf));
+        if (r > 0) { out.append(buf, size_t(r)); continue; }
+        if (r == 0) break; // EOF — source closed its end.
+        if (errno == EAGAIN || errno == EINTR) {
+            if (spent >= overall_budget_ms) break;
+            struct pollfd pfd{ fds[0], POLLIN, 0 };
+            int t = std::min(timeout_ms_per_wait, overall_budget_ms - spent);
+            int p = ::poll(&pfd, 1, t);
+            spent += t;
+            if (p < 0 && errno != EINTR) break;
+            continue;
+        }
+        break;
+    }
+    ::close(fds[0]);
+    return out;
 }
 
 } // namespace stilus::wlw

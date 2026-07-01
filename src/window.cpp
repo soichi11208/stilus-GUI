@@ -1,5 +1,6 @@
 // src/window.cpp
 #include "stilus/window.hpp"
+#include "stilus/popup.hpp"
 
 #include <algorithm>
 #include <vector>
@@ -46,6 +47,16 @@ App& App::instance() {
     return a;
 }
 
+void App::clipboard_set_text(std::string_view utf8) {
+    if (p_->windows.empty()) return;
+    p_->windows.front()->clipboard_set_text(utf8);
+}
+
+std::string App::clipboard_get_text() {
+    if (p_->windows.empty()) return {};
+    return p_->windows.front()->clipboard_get_text();
+}
+
 void App::register_window(detail::WindowImpl* w)   { p_->windows.push_back(w); }
 void App::unregister_window(detail::WindowImpl* w) {
     auto& v = p_->windows;
@@ -81,6 +92,11 @@ Window::~Window() {
 void Window::on_frame(std::function<void(Canvas&)> cb)      { impl_->set_frame_cb(std::move(cb)); }
 void Window::on_event(std::function<void(const Event&)> cb) { impl_->set_event_cb(std::move(cb)); }
 void Window::request_redraw() { impl_->request_redraw(); }
+void Window::request_animation_frame(std::function<void(float)> cb) {
+    impl_->request_animation_frame(std::move(cb));
+    // A pending raf implies we want the next frame — force a wake / repaint.
+    impl_->request_redraw();
+}
 void Window::close()          { impl_->close(); }
 bool Window::is_open() const  { return impl_->is_open(); }
 int  Window::width()  const   { return impl_->width();  }
@@ -133,5 +149,24 @@ void Window::set_root(std::unique_ptr<Widget> root) {
 }
 
 Widget* Window::root() { return root_.get(); }
+
+// ---------------------------------------------------------------------------
+// Popup
+// ---------------------------------------------------------------------------
+Popup::Popup(Window& parent, Rect anchor, int w, int h)
+    : impl_(parent.impl_->create_popup(anchor, w, h)) {}
+Popup::~Popup() = default;
+
+void Popup::on_frame(std::function<void(Canvas&)> cb) {
+    if (impl_) impl_->set_frame_cb(std::move(cb));
+}
+void Popup::on_event(std::function<void(const Event&)> cb) {
+    if (impl_) impl_->set_event_cb(std::move(cb));
+}
+void Popup::request_redraw() { if (impl_) impl_->request_redraw(); }
+void Popup::close()          { if (impl_) impl_->close(); }
+bool Popup::is_open() const  { return impl_ && impl_->is_open(); }
+int  Popup::width()  const   { return impl_ ? impl_->width()  : 0; }
+int  Popup::height() const   { return impl_ ? impl_->height() : 0; }
 
 } // namespace stilus

@@ -121,6 +121,9 @@ bool Window::init() {
     wm_delete_atom_    = intern(conn_, "WM_DELETE_WINDOW");
     net_wm_name_atom_  = intern(conn_, "_NET_WM_NAME");
     utf8_string_atom_  = intern(conn_, "UTF8_STRING");
+    clipboard_atom_    = intern(conn_, "CLIPBOARD");
+    targets_atom_      = intern(conn_, "TARGETS");
+    stilus_paste_atom_ = intern(conn_, "STILUS_PASTE");
 
     win_ = xcb_generate_id(conn_);
     uint32_t mask = XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK;
@@ -235,6 +238,19 @@ void Window::paint_frame_() {
 // ---------------------------------------------------------------------------
 bool Window::pump() {
     if (!open_) return false;
+
+    // Animation-frame callback (see wl_window.cpp for the full rationale).
+    if (raf_cb_) {
+        uint64_t t = now_ms();
+        float dt = raf_last_ms_ == 0 ? 0.0f : float(t - raf_last_ms_) / 1000.0f;
+        raf_last_ms_ = t;
+        auto cb = std::move(raf_cb_);
+        raf_cb_ = nullptr;
+        cb(dt);
+        needs_redraw_ = true;
+    } else {
+        raf_last_ms_ = 0;
+    }
 
     if (needs_redraw_) paint_frame_();
 
@@ -429,6 +445,47 @@ void Window::dispatch_event_(xcb_generic_event_t* ev) {
         mods_ = KeyMods{};
         if (event_cb_) { Event e; e.type = Event::Type::Unfocus; event_cb_(e); }
         break;
+    case XCB_SELECTION_REQUEST: {
+        // Another client wants to paste from CLIPBOARD; if we own it, hand
+        // over the stored text.
+        auto* sr = (xcb_selection_request_event_t*)ev;
+        xcb_selection_notify_event_t notify{};
+        notify.response_type = XCB_SELECTION_NOTIFY;
+        notify.time      = sr->time;
+        notify.requestor = sr->requestor;
+        notify.selection = sr->selection;
+        notify.target    = sr->target;
+        notify.property  = XCB_ATOM_NONE;
+        if (sr->selection == clipboard_atom_ && owns_clipboard_) {
+            if (sr->target == targets_atom_) {
+                // Advertise the two MIME-ish targets we support.
+                xcb_atom_t targets[] = { targets_atom_, utf8_string_atom_ };
+                xcb_change_property(conn_, XCB_PROP_MODE_REPLACE,
+                    sr->requestor, sr->property, XCB_ATOM_ATOM, 32,
+                    sizeof(targets)/sizeof(targets[0]), targets);
+                notify.property = sr->property;
+            } else if (sr->target == utf8_string_atom_ ||
+                       sr->target == XCB_ATOM_STRING) {
+                xcb_change_property(conn_, XCB_PROP_MODE_REPLACE,
+                    sr->requestor, sr->property, sr->target, 8,
+                    uint32_t(clipboard_local_text_.size()),
+                    clipboard_local_text_.data());
+                notify.property = sr->property;
+            }
+        }
+        xcb_send_event(conn_, 0, sr->requestor,
+            XCB_EVENT_MASK_NO_EVENT, (const char*)&notify);
+        xcb_flush(conn_);
+        break;
+    }
+    case XCB_SELECTION_CLEAR: {
+        auto* sc = (xcb_selection_clear_event_t*)ev;
+        if (sc->selection == clipboard_atom_) {
+            owns_clipboard_ = false;
+            clipboard_local_text_.clear();
+        }
+        break;
+    }
     case 0: {
         // Error event. response_type==0 means xcb_generic_error_t.
         auto* er = (xcb_generic_error_t*)ev;
@@ -439,6 +496,74 @@ void Window::dispatch_event_(xcb_generic_event_t* ev) {
     default:
         break;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Clipboard (X11): CLIPBOARD selection, UTF8_STRING target.
+// ---------------------------------------------------------------------------
+void Window::clipboard_set_text(std::string_view utf8) {
+    if (!conn_ || !win_ || !clipboard_atom_) return;
+    clipboard_local_text_.assign(utf8);
+    owns_clipboard_ = true;
+    xcb_set_selection_owner(conn_, win_, clipboard_atom_, XCB_CURRENT_TIME);
+    xcb_flush(conn_);
+}
+
+std::string Window::clipboard_get_text() {
+    if (owns_clipboard_) return clipboard_local_text_;
+    if (!conn_ || !win_ || !clipboard_atom_ || !utf8_string_atom_) return {};
+
+    // Delete any leftover value on the scratch property before asking the
+    // owner to write into it.
+    xcb_delete_property(conn_, win_, stilus_paste_atom_);
+    xcb_convert_selection(conn_, win_, clipboard_atom_, utf8_string_atom_,
+                          stilus_paste_atom_, XCB_CURRENT_TIME);
+    xcb_flush(conn_);
+
+    // Wait briefly for SelectionNotify. Any *other* events we see while
+    // waiting are dispatched normally so we don't drop pointer input during
+    // the paste round-trip.
+    const int budget_ms = 500;
+    int spent = 0;
+    xcb_selection_notify_event_t* notify = nullptr;
+    while (spent < budget_ms) {
+        xcb_generic_event_t* ev = xcb_poll_for_event(conn_);
+        if (!ev) {
+            int fd = xcb_get_file_descriptor(conn_);
+            struct pollfd pfd{ fd, POLLIN, 0 };
+            int t = std::min(50, budget_ms - spent);
+            ::poll(&pfd, 1, t);
+            spent += t;
+            continue;
+        }
+        uint8_t type = ev->response_type & 0x7f;
+        if (type == XCB_SELECTION_NOTIFY) {
+            notify = (xcb_selection_notify_event_t*)ev;
+            break;
+        }
+        dispatch_event_(ev);
+        free(ev);
+    }
+    if (!notify) return {};
+    xcb_atom_t prop = notify->property;
+    free(notify);
+    if (prop == XCB_ATOM_NONE) return {};
+
+    // Fetch the property in one shot. Large clipboards (>256 KiB) would
+    // need INCR handling; skipping that for now.
+    xcb_get_property_reply_t* r = xcb_get_property_reply(conn_,
+        xcb_get_property(conn_, 1 /* delete */, win_, prop,
+                         XCB_GET_PROPERTY_TYPE_ANY, 0, 0x10000),
+        nullptr);
+    if (!r) return {};
+    std::string out;
+    if (r->type == utf8_string_atom_ || r->type == XCB_ATOM_STRING) {
+        const char* data = (const char*)xcb_get_property_value(r);
+        int len = xcb_get_property_value_length(r);
+        out.assign(data, size_t(len));
+    }
+    free(r);
+    return out;
 }
 
 } // namespace stilus::xcbw

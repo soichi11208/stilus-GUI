@@ -11,7 +11,156 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb/stb_truetype.h"
 
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG          // only PNG — CBDT emoji use PNG data
+#define STBI_NO_STDIO          // we always decode from memory
+#include "stb/stb_image.h"
+
 namespace stilus {
+
+// ---- CBDT/CBLC (color emoji bitmap) parsing -------------------------------
+// SFNT big-endian reads.
+static uint16_t be16(const uint8_t* p) { return uint16_t(uint16_t(p[0]) << 8 | p[1]); }
+static uint32_t be32(const uint8_t* p) {
+    return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) |
+           (uint32_t(p[2]) <<  8) |  uint32_t(p[3]);
+}
+static constexpr uint32_t kTagCBDT = 0x43424454u; // 'CBDT'
+static constexpr uint32_t kTagCBLC = 0x4342'4C43u; // 'CBLC'
+
+// Locate an SFNT table inside a face at `fontstart`. Populates {off, len} in
+// file-absolute units. Returns false if the table isn't present.
+static bool find_sfnt_table(const uint8_t* data, size_t data_len,
+                            uint32_t fontstart, uint32_t tag,
+                            uint32_t& out_off, uint32_t& out_len) {
+    if (fontstart + 12 > data_len) return false;
+    uint16_t numTables = be16(data + fontstart + 4);
+    uint32_t p = fontstart + 12;
+    if (p + size_t(numTables) * 16 > data_len) return false;
+    for (uint16_t i = 0; i < numTables; ++i, p += 16) {
+        if (be32(data + p) == tag) {
+            out_off = be32(data + p + 8);
+            out_len = be32(data + p + 12);
+            return true;
+        }
+    }
+    return false;
+}
+
+// Returned metadata for one CBDT glyph. src_w/src_h are the native bitmap
+// size (matching the PNG we decode); bearingX/bearingY follow the OpenType
+// small-metrics convention (bearingY = pixels from baseline to top-of-glyph).
+struct EmojiHit {
+    std::vector<uint8_t> png;    // encoded PNG blob
+    int src_w = 0, src_h = 0;     // (filled in after PNG decode)
+    int bearingX = 0;
+    int bearingY = 0;
+    int adv      = 0;             // native pixel advance
+    int src_ppem = 0;             // ppemY of the selected bitmap strike
+};
+
+// Walk CBLC/CBDT to find PNG data for a given glyph index at a target ppem.
+// We pick the bitmap strike whose ppemY is closest to `target_ppem`.
+static bool cbdt_find_glyph(const uint8_t* ttf, size_t ttf_len,
+                            uint32_t cblc_off, uint32_t cblc_len,
+                            uint32_t cbdt_off, uint32_t cbdt_len,
+                            int glyph_id, float target_ppem,
+                            EmojiHit& hit) {
+    if (cblc_len < 8 || cbdt_len == 0) return false;
+    if (cblc_off + cblc_len > ttf_len) return false;
+    if (cbdt_off + cbdt_len > ttf_len) return false;
+    const uint8_t* p = ttf + cblc_off;
+
+    uint32_t numSizes = be32(p + 4);
+    if (numSizes == 0 || numSizes > 100) return false;
+    if (8 + numSizes * 48 > cblc_len) return false;
+
+    // 1) Pick the best BitmapSize entry containing our glyph.
+    uint32_t best_bs = 0;
+    int      best_diff = 1'000'000;
+    bool     found_bs = false;
+    for (uint32_t i = 0; i < numSizes; ++i) {
+        uint32_t bs = 8 + i * 48;
+        uint16_t startGid = be16(p + bs + 40);
+        uint16_t endGid   = be16(p + bs + 42);
+        if (glyph_id < startGid || glyph_id > endGid) continue;
+        uint8_t ppemY = p[bs + 45];
+        int diff = int(ppemY) - int(target_ppem);
+        if (diff < 0) diff = -diff;
+        if (diff < best_diff) { best_diff = diff; best_bs = bs; found_bs = true; }
+    }
+    if (!found_bs) return false;
+
+    uint32_t idxArrOff = be32(p + best_bs + 0);
+    uint32_t numIdx    = be32(p + best_bs + 8);
+    uint8_t  ppemY     = p[best_bs + 45];
+    if (idxArrOff + numIdx * 8 > cblc_len) return false;
+    hit.src_ppem = int(ppemY);
+
+    // 2) Locate the indexSubTable covering `glyph_id`.
+    for (uint32_t i = 0; i < numIdx; ++i) {
+        uint32_t entry = idxArrOff + i * 8;
+        uint16_t first = be16(p + entry + 0);
+        uint16_t last  = be16(p + entry + 2);
+        if (glyph_id < first || glyph_id > last) continue;
+        uint32_t extra = be32(p + entry + 4);
+        uint32_t sub   = idxArrOff + extra;
+        if (sub + 8 > cblc_len) return false;
+
+        uint16_t indexFormat = be16(p + sub + 0);
+        uint16_t imageFormat = be16(p + sub + 2);
+        uint32_t imgOffBase  = be32(p + sub + 4);
+        int      rel         = glyph_id - first;
+
+        uint32_t g_off = 0, g_len = 0;
+        if (indexFormat == 1) {
+            uint32_t oa = sub + 8;
+            if (oa + (rel + 2) * 4 > cblc_len) return false;
+            uint32_t o0 = be32(p + oa + rel * 4);
+            uint32_t o1 = be32(p + oa + (rel + 1) * 4);
+            g_off = imgOffBase + o0;
+            g_len = o1 > o0 ? o1 - o0 : 0;
+        } else if (indexFormat == 3) {
+            uint32_t oa = sub + 8;
+            if (oa + (rel + 2) * 2 > cblc_len) return false;
+            uint16_t o0 = be16(p + oa + rel * 2);
+            uint16_t o1 = be16(p + oa + (rel + 1) * 2);
+            g_off = imgOffBase + o0;
+            g_len = o1 > o0 ? o1 - o0 : 0;
+        } else {
+            return false; // other index formats not supported yet
+        }
+
+        // 3) Read the CBDT record. Only imageFormats 17 (small metrics + PNG)
+        //    and 18 (big metrics + PNG) are supported.
+        if (g_off + g_len > cbdt_len) return false;
+        const uint8_t* g = ttf + cbdt_off + g_off;
+        if (imageFormat == 17) {
+            if (g_len < 9) return false;
+            int8_t  bx = int8_t(g[2]);
+            int8_t  by = int8_t(g[3]);
+            uint8_t av = g[4];
+            uint32_t dataLen = be32(g + 5);
+            if (uint64_t(9) + dataLen > g_len) return false;
+            hit.png.assign(g + 9, g + 9 + dataLen);
+            hit.bearingX = bx; hit.bearingY = by; hit.adv = av;
+            return true;
+        } else if (imageFormat == 18) {
+            if (g_len < 12) return false;
+            int8_t  bx = int8_t(g[2]);
+            int8_t  by = int8_t(g[3]);
+            uint8_t av = g[4];
+            uint32_t dataLen = be32(g + 8);
+            if (uint64_t(12) + dataLen > g_len) return false;
+            hit.png.assign(g + 12, g + 12 + dataLen);
+            hit.bearingX = bx; hit.bearingY = by; hit.adv = av;
+            return true;
+        }
+        return false;
+    }
+    return false;
+}
+
 
 // ---- UTF-8 ----------------------------------------------------------------
 static uint32_t utf8_next(const char*& p, const char* end) {
@@ -49,6 +198,59 @@ const GlyphBitmap* Font::Impl::glyph(uint32_t cp) const {
     if (it != cache.end()) return &it->second;
 
     GlyphBitmap g;
+
+    // Fast path for color bitmap fonts (Noto Color Emoji etc.). If the face
+    // has CBDT/CBLC tables and this codepoint has a bitmap glyph, decode
+    // the embedded PNG, nearest-scale to the target size and cache as RGBA.
+    if (cbdt_off && cblc_off) {
+        int gid = stbtt_FindGlyphIndex(info.get(), int(cp));
+        if (gid != 0) {
+            EmojiHit hit;
+            if (cbdt_find_glyph(ttf.data(), ttf.size(),
+                                cblc_off, cblc_len, cbdt_off, cbdt_len,
+                                gid, pixel_size, hit)) {
+                int iw = 0, ih = 0, ic = 0;
+                stbi_uc* px = stbi_load_from_memory(
+                    hit.png.data(), int(hit.png.size()),
+                    &iw, &ih, &ic, 4);
+                if (px) {
+                    float sc = pixel_size / float(hit.src_ppem);
+                    int tw = std::max(1, int(iw * sc + 0.5f));
+                    int th = std::max(1, int(ih * sc + 0.5f));
+                    int advance_i = 0, lsb = 0;
+                    stbtt_GetCodepointHMetrics(info.get(), int(cp),
+                                               &advance_i, &lsb);
+                    g.advance  = advance_i * scale;
+                    g.w = tw; g.h = th;
+                    g.x_off = int(std::round(hit.bearingX * sc));
+                    g.y_off = -int(std::round(hit.bearingY * sc));
+                    g.is_color = true;
+                    g.rgba.assign(size_t(tw) * size_t(th) * 4, 0);
+                    for (int y = 0; y < th; ++y) {
+                        int sy = int((float(y) + 0.5f) / sc);
+                        if (sy < 0) sy = 0; else if (sy >= ih) sy = ih - 1;
+                        for (int x = 0; x < tw; ++x) {
+                            int sx = int((float(x) + 0.5f) / sc);
+                            if (sx < 0) sx = 0; else if (sx >= iw) sx = iw - 1;
+                            const stbi_uc* s = px + (sy * iw + sx) * 4;
+                            uint8_t r = s[0], gc = s[1], b = s[2], a = s[3];
+                            // Premultiply so the canvas can blit source-over
+                            // directly without a per-pixel multiply.
+                            uint8_t* d = g.rgba.data() + (y * tw + x) * 4;
+                            d[0] = uint8_t((int(r)  * a + 127) / 255);
+                            d[1] = uint8_t((int(gc) * a + 127) / 255);
+                            d[2] = uint8_t((int(b)  * a + 127) / 255);
+                            d[3] = a;
+                        }
+                    }
+                    stbi_image_free(px);
+                    auto [ins, _] = cache.emplace(cp, std::move(g));
+                    return &ins->second;
+                }
+            }
+        }
+    }
+
     int advance, lsb;
     stbtt_GetCodepointHMetrics(info.get(), int(cp), &advance, &lsb);
     g.advance = advance * scale;
@@ -86,10 +288,19 @@ Font Font::from_memory(std::vector<uint8_t> bytes, float pixel_size,
     if (offset < 0) return f;
     if (!stbtt_InitFont(p->info.get(), p->ttf.data(), offset)) return f;
 
+    p->fontstart = uint32_t(offset);
     p->pixel_size = pixel_size;
     p->scale = stbtt_ScaleForPixelHeight(p->info.get(), pixel_size);
 
     stbtt_GetFontVMetrics(p->info.get(), &p->ascent, &p->descent, &p->line_gap);
+
+    // Detect color-bitmap tables (Noto Color Emoji et al). Absent tables
+    // just leave the offsets at 0, in which case glyph() falls straight
+    // through to outline rasterization.
+    find_sfnt_table(p->ttf.data(), p->ttf.size(), p->fontstart, kTagCBDT,
+                    p->cbdt_off, p->cbdt_len);
+    find_sfnt_table(p->ttf.data(), p->ttf.size(), p->fontstart, kTagCBLC,
+                    p->cblc_off, p->cblc_len);
 
     f.faces_.push_back(std::move(p));
     return f;

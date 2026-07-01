@@ -35,6 +35,15 @@ public:
     const Theme& theme() const { return theme_; }
 
     void request_redraw();
+
+    // One-shot animation-frame request. `cb` receives the seconds elapsed
+    // since the previous animation frame (or 0 on the first invocation).
+    // Not a repeating timer — the callback must call this again from inside
+    // itself to keep animating. Modelled after the browser's
+    // requestAnimationFrame API. Safe to call from event handlers or from
+    // inside the callback itself.
+    void request_animation_frame(std::function<void(float dt_seconds)> cb);
+
     void close();
     bool is_open() const;
 
@@ -49,12 +58,19 @@ private:
     std::unique_ptr<Widget>             root_;
     Theme                               theme_;
     friend class App;
+    friend class Popup;
 };
 
 class App {
 public:
     static App& instance();
     int run(); // blocks; returns exit code
+
+    // Clipboard (text). Delegates to the first registered window's backend
+    // — every window shares the display's selection under the hood, so it
+    // doesn't matter which. Returns "" on failure / empty clipboard.
+    void        clipboard_set_text(std::string_view utf8);
+    std::string clipboard_get_text();
 
     // registration is done automatically from Window ctor
     void register_window(detail::WindowImpl* w);

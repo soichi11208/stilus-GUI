@@ -398,20 +398,49 @@ void SoftCanvas::draw_text(Vec2 pos, std::string_view utf8,
             cx1 = std::min(cx1, w_);
             cy1 = std::min(cy1, h_);
 
-            for (int y = cy0; y < cy1; ++y) {
-                int sy = int(float(y - gy0) * g->h / float(gh));
-                if (sy < 0) sy = 0; if (sy >= g->h) sy = g->h - 1;
-                const uint8_t* src = g->alpha.data() + sy * g->w;
-                uint32_t* row = px_ + y * stride_;
-                for (int x = cx0; x < cx1; ++x) {
-                    int sxi = int(float(x - gx0) * g->w / float(gw));
-                    if (sxi < 0) sxi = 0; if (sxi >= g->w) sxi = g->w - 1;
-                    uint8_t a = src[sxi];
-                    if (!a) continue;
-                    float cov = a / 255.0f;
-                    if (mask) cov *= sample_mask(x, y);
-                    if (cov <= 0) continue;
-                    row[x] = blend_over(row[x], premul(c, cov));
+            if (g->is_color) {
+                // Premultiplied RGBA source-over; the requested `c` is ignored
+                // because color glyphs carry their own hues.
+                for (int y = cy0; y < cy1; ++y) {
+                    int sy = int(float(y - gy0) * g->h / float(gh));
+                    if (sy < 0) sy = 0; if (sy >= g->h) sy = g->h - 1;
+                    const uint8_t* srow = g->rgba.data() + sy * g->w * 4;
+                    uint32_t* row = px_ + y * stride_;
+                    for (int x = cx0; x < cx1; ++x) {
+                        int sxi = int(float(x - gx0) * g->w / float(gw));
+                        if (sxi < 0) sxi = 0; if (sxi >= g->w) sxi = g->w - 1;
+                        const uint8_t* s = srow + sxi * 4;
+                        Premul sp{ s[0], s[1], s[2], s[3] };
+                        if (sp.a == 0) continue;
+                        if (mask) {
+                            float mv = sample_mask(x, y);
+                            if (mv <= 0) continue;
+                            if (mv < 1) {
+                                sp.r = uint16_t(sp.r * mv);
+                                sp.g = uint16_t(sp.g * mv);
+                                sp.b = uint16_t(sp.b * mv);
+                                sp.a = uint16_t(sp.a * mv);
+                            }
+                        }
+                        row[x] = blend_over(row[x], sp);
+                    }
+                }
+            } else {
+                for (int y = cy0; y < cy1; ++y) {
+                    int sy = int(float(y - gy0) * g->h / float(gh));
+                    if (sy < 0) sy = 0; if (sy >= g->h) sy = g->h - 1;
+                    const uint8_t* src = g->alpha.data() + sy * g->w;
+                    uint32_t* row = px_ + y * stride_;
+                    for (int x = cx0; x < cx1; ++x) {
+                        int sxi = int(float(x - gx0) * g->w / float(gw));
+                        if (sxi < 0) sxi = 0; if (sxi >= g->w) sxi = g->w - 1;
+                        uint8_t a = src[sxi];
+                        if (!a) continue;
+                        float cov = a / 255.0f;
+                        if (mask) cov *= sample_mask(x, y);
+                        if (cov <= 0) continue;
+                        row[x] = blend_over(row[x], premul(c, cov));
+                    }
                 }
             }
         }

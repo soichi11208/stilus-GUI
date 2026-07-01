@@ -62,6 +62,41 @@ namespace xdg_surface_req {
 }
 namespace xdg_surface_evt { enum { configure = 0 }; }
 
+namespace xdg_positioner_req {
+    enum { destroy = 0, set_size = 1, set_anchor_rect = 2,
+           set_anchor = 3, set_gravity = 4,
+           set_constraint_adjustment = 5, set_offset = 6 };
+}
+namespace xdg_positioner_anchor {
+    constexpr uint32_t none         = 0;
+    constexpr uint32_t top          = 1;
+    constexpr uint32_t bottom       = 2;
+    constexpr uint32_t left         = 3;
+    constexpr uint32_t right        = 4;
+    constexpr uint32_t top_left     = 5;
+    constexpr uint32_t bottom_left  = 6;
+    constexpr uint32_t top_right    = 7;
+    constexpr uint32_t bottom_right = 8;
+}
+namespace xdg_positioner_gravity {
+    constexpr uint32_t none         = 0;
+    constexpr uint32_t top          = 1;
+    constexpr uint32_t bottom       = 2;
+    constexpr uint32_t left         = 3;
+    constexpr uint32_t right        = 4;
+    constexpr uint32_t top_left     = 5;
+    constexpr uint32_t bottom_left  = 6;
+    constexpr uint32_t top_right    = 7;
+    constexpr uint32_t bottom_right = 8;
+}
+
+namespace xdg_popup_req {
+    enum { destroy = 0, grab = 1, reposition = 2 };
+}
+namespace xdg_popup_evt {
+    enum { configure = 0, popup_done = 1, repositioned = 2 };
+}
+
 namespace xdg_toplevel_req {
     enum { destroy = 0, set_parent = 1, set_title = 2, set_app_id = 3,
            show_window_menu = 4, move = 5, resize = 6,
@@ -186,6 +221,53 @@ namespace wp_cursor_shape_device_v1_shape {
     constexpr uint32_t zoom_out       = 34;
 }
 
+// wl_data_device_manager, wl_data_device, wl_data_source, wl_data_offer —
+// the copy/paste (and drag-and-drop) machinery. We only wire up copy/paste.
+namespace wl_data_device_manager_req {
+    enum { create_data_source = 0, get_data_device = 1 };
+}
+namespace wl_data_device_req {
+    enum { start_drag = 0, set_selection = 1, release = 2 };
+}
+namespace wl_data_device_evt {
+    enum { data_offer = 0, enter = 1, leave = 2, motion = 3,
+           drop = 4, selection = 5 };
+}
+namespace wl_data_source_req {
+    enum { offer = 0, destroy = 1, set_actions = 2 };
+}
+namespace wl_data_source_evt {
+    enum { target = 0, send = 1, cancelled = 2,
+           dnd_drop_performed = 3, dnd_finished = 4, action = 5 };
+}
+namespace wl_data_offer_req {
+    enum { accept = 0, receive = 1, destroy = 2, finish = 3, set_actions = 4 };
+}
+namespace wl_data_offer_evt {
+    enum { offer = 0, source_actions = 1, action = 2 };
+}
+
+// wp_viewporter — lets us decouple the buffer size (in physical pixels)
+// from the surface's logical size, which is what fractional scaling needs.
+namespace wp_viewporter_req {
+    enum { destroy = 0, get_viewport = 1 };
+}
+namespace wp_viewport_req {
+    enum { destroy = 0, set_source = 1, set_destination = 2 };
+}
+
+// wp_fractional_scale_v1 — the compositor tells us a preferred scale as
+// (real_scale * 120), i.e. 180 == 1.5x. Used together with wp_viewporter.
+namespace wp_fractional_scale_manager_v1_req {
+    enum { destroy = 0, get_fractional_scale = 1 };
+}
+namespace wp_fractional_scale_v1_req {
+    enum { destroy = 0 };
+}
+namespace wp_fractional_scale_v1_evt {
+    enum { preferred_scale = 0 };
+}
+
 // wl_output (core, version >= 2 needed for the scale event).
 namespace wl_output_req { enum { release = 0 }; }
 namespace wl_output_evt {
@@ -210,7 +292,8 @@ namespace zwp_text_input_v3_evt {
 }
 
 // Convert Wayland fixed (24.8) to float.
-inline float fixed_to_float(int32_t v) { return float(v) / 256.0f; }
+inline float   fixed_to_float(int32_t v) { return float(v) / 256.0f; }
+inline int32_t float_to_fixed(float   v) { return int32_t(v * 256.0f); }
 
 // wl_shm format codes
 namespace shm_format {

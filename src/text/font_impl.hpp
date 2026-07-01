@@ -11,13 +11,16 @@ struct stbtt_fontinfo;
 
 namespace stilus {
 
-// Per-glyph raster (8bpp alpha).
+// Per-glyph raster. Either an 8bpp alpha mask (outline-derived) or a
+// premultiplied RGBA bitmap (color emoji from CBDT / sbix / COLRv1 raster).
 struct GlyphBitmap {
-    std::vector<uint8_t> alpha;  // w*h bytes
+    std::vector<uint8_t> alpha;  // w*h bytes when !is_color
+    std::vector<uint8_t> rgba;   // w*h*4 bytes when is_color (premultiplied)
     int w = 0, h = 0;
     int x_off = 0;              // offset from pen origin (left of bitmap)
     int y_off = 0;              // offset from baseline (top of bitmap, usually negative)
     float advance = 0;          // advance width in pixels
+    bool  is_color = false;
 };
 
 struct Font::Impl {
@@ -31,6 +34,16 @@ struct Font::Impl {
 
     // Glyph cache keyed by codepoint.
     mutable std::unordered_map<uint32_t, GlyphBitmap> cache;
+
+    // Offsets into `ttf` for CBDT (bitmap data) and CBLC (bitmap location).
+    // 0 == not present in this face.
+    uint32_t cbdt_off = 0;
+    uint32_t cbdt_len = 0;
+    uint32_t cblc_off = 0;
+    uint32_t cblc_len = 0;
+    // Offset of this face's SFNT header inside `ttf` (non-zero for TTC faces
+    // beyond index 0).
+    uint32_t fontstart = 0;
 
     // True iff this face has a real glyph for `cp` (stbtt_FindGlyphIndex != 0).
     bool has_glyph(uint32_t cp) const;

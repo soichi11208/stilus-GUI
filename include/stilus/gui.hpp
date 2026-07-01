@@ -9,3 +9,4 @@
 #include "widget.hpp"
 #include "widgets.hpp"
 #include "window.hpp"
+#include "popup.hpp"

@@ -76,6 +76,20 @@ private:
     xcb_atom_t wm_delete_atom_    = 0;
     xcb_atom_t net_wm_name_atom_  = 0;
     xcb_atom_t utf8_string_atom_  = 0;
+    // Clipboard atoms.
+    xcb_atom_t clipboard_atom_    = 0;
+    xcb_atom_t targets_atom_      = 0;
+    xcb_atom_t stilus_paste_atom_ = 0;   // scratch property for paste replies
+
+    // Local clipboard state — used both to answer SelectionRequest events
+    // when we own the selection and as the fast path for clipboard_get_text().
+    std::string clipboard_local_text_;
+    bool        owns_clipboard_ = false;
+
+public:
+    void        clipboard_set_text(std::string_view utf8) override;
+    std::string clipboard_get_text() override;
+private:
 
     // Input state
     float    mouse_x_         = 0;

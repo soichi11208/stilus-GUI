@@ -30,6 +30,7 @@ if(UNIX AND NOT APPLE)
     list(APPEND STILUS_SOURCES
         src/platform/wayland/wl_proto.cpp
         src/platform/wayland/wl_window.cpp
+        src/platform/wayland/wl_popup.cpp
         src/platform/wayland/wl_factory.cpp
         src/platform/wayland/xkb_parse.cpp
         src/platform/x11/xcb_window.cpp
@@ -108,6 +109,18 @@ target_link_libraries(transform_demo PRIVATE stilus)
 
 add_executable(cjk_demo examples/cjk_demo.cpp)
 target_link_libraries(cjk_demo PRIVATE stilus)
+
+add_executable(anim_demo examples/anim_demo.cpp)
+target_link_libraries(anim_demo PRIVATE stilus)
+
+add_executable(clipboard_demo examples/clipboard_demo.cpp)
+target_link_libraries(clipboard_demo PRIVATE stilus)
+
+add_executable(popup_demo examples/popup_demo.cpp)
+target_link_libraries(popup_demo PRIVATE stilus)
+
+add_executable(emoji_demo examples/emoji_demo.cpp)
+target_link_libraries(emoji_demo PRIVATE stilus)
 
 add_executable(backend_test examples/backend_test.cpp)
 target_link_libraries(backend_test PRIVATE stilus)

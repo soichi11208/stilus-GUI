@@ -26,7 +26,13 @@ public:
 
     int  width()  const override { return width_; }
     int  height() const override { return height_; }
-    int  scale_factor() const override { return scale_; }
+    // Effective scale, rounded to the nearest integer for callers that
+    // want a simple factor. The internal float scale (`scale_f_`) is what
+    // paint_frame_ uses for buffer sizing.
+    int  scale_factor() const override {
+        int s = int(scale_f_ + 0.5f);
+        return s < 1 ? 1 : s;
+    }
     bool is_open() const override { return open_; }
     void close() override;
     void request_redraw() override { needs_redraw_ = true; }
@@ -84,8 +90,16 @@ private:
     int  width_  = 0;       // logical pixels
     int  height_ = 0;       // logical pixels
     bool sending_close_ = false;
-    int  scale_  = 1;       // current buffer scale factor (>=1)
-    int  applied_scale_ = 0; // last scale we sent to wl_surface::set_buffer_scale
+    // Integer buffer scale derived from wl_output.scale events. Used as a
+    // fallback when the compositor doesn't offer fractional scaling.
+    int   scale_  = 1;
+    int   applied_scale_ = 0; // last scale we sent to wl_surface::set_buffer_scale
+    // Effective scale (float). Equals scale_ when there's no fractional
+    // path, and comes from wp_fractional_scale_v1.preferred_scale otherwise.
+    float scale_f_ = 1.0f;
+    // Sticky: once the compositor sends a preferred_scale we switch onto the
+    // viewport+physical-buffer path and stay there for the surface's life.
+    bool  has_preferred_fractional_ = false;
     bool open_   = false;
     bool configured_       = false;
     bool needs_redraw_     = true;
@@ -107,6 +121,46 @@ private:
     // object is created once we have an xdg_toplevel.
     wl::ObjectId decoration_manager_ = 0;
     wl::ObjectId toplevel_decoration_ = 0;
+    // Clipboard (wl_data_device_manager). Text-only for now.
+    wl::ObjectId data_device_manager_ = 0;
+    wl::ObjectId data_device_         = 0;
+    wl::ObjectId current_data_offer_  = 0; // last offer whose selection() fired
+    wl::ObjectId current_selection_source_ = 0; // wl_data_source we own, if any
+    std::string  clipboard_local_text_;      // text we published (if we own)
+    // Public interface override plumbing:
+public:
+    void        clipboard_set_text(std::string_view utf8) override;
+    std::string clipboard_get_text() override;
+    std::unique_ptr<detail::PopupImpl>
+        create_popup(Rect anchor, int w, int h) override;
+
+    // Backend hooks used by wlw::PopupImpl, which lives in the same
+    // namespace but a different translation unit.
+    wl::Display&  display_() { return d_; }
+    wl::ObjectId  compositor_id_() const { return compositor_; }
+    wl::ObjectId  shm_id_() const { return shm_; }
+    wl::ObjectId  xdg_wm_base_id_() const { return xdg_wm_base_; }
+    wl::ObjectId  xdg_surface_id_() const { return xdg_surface_; }
+    wl::ObjectId  seat_id_() const { return seat_; }
+    uint32_t      last_pointer_serial_val_() const {
+        return last_pointer_serial_ ? last_pointer_serial_
+                                    : last_pointer_enter_serial_;
+    }
+    // Popup registration: children are painted after the parent, and
+    // unregister themselves on destruction.
+    void register_popup_(class PopupImpl* p);
+    void unregister_popup_(class PopupImpl* p);
+    void paint_popups_();
+private:
+    std::vector<class PopupImpl*> popups_;
+    // wp_viewporter + wp_fractional_scale_v1 for fractional HiDPI.
+    wl::ObjectId viewporter_               = 0;
+    wl::ObjectId viewport_                 = 0;
+    wl::ObjectId fractional_scale_manager_ = 0;
+    wl::ObjectId fractional_scale_object_  = 0;
+    // Last-applied viewport destination so we only re-send on change.
+    int          applied_viewport_w_ = 0;
+    int          applied_viewport_h_ = 0;
     // Client-side decorations: drawn when the compositor refuses or doesn't
     // support xdg-decoration. The surface buffer is taller than the user-
     // visible area by `csd_titlebar_h_` pixels; the titlebar lives at the top
