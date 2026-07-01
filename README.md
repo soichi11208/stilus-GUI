@@ -74,7 +74,7 @@ pkg-config --cflags --libs --static stilus
 
 ## ライセンス / 依存関係
 
-stilus 本体のライセンスは未定 (リポジトリ所有者が今後決定)。ベンダリングしているサードパーティコードは以下の通り:
+stilus 本体は [WTFPL](LICENSE) (Do What The Fuck You Want To Public License) v2。ベンダリングしているサードパーティコードは以下の通り:
 
 - `third_party/stb/stb_truetype.h` — Public Domain (MIT とのデュアルライセンス、ファイルヘッダ参照)
 - `third_party/xcb/` — [XCB](https://xcb.freedesktop.org/)、MIT/X11 ライセンス
