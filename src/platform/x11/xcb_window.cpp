@@ -206,6 +206,8 @@ void Window::paint_frame_() {
     uint32_t* pixels = reinterpret_cast<uint32_t*>(b->data);
     canvas.bind(pixels, b->width, b->height, b->stride / 4);
 
+    needs_redraw_ = false;
+
     if (scale_ != 1) canvas.push_transform(Affine::scale(float(scale_)));
     canvas.clear(Color::rgb(0x202024));
     if (frame_cb_) frame_cb_(canvas);
@@ -232,7 +234,6 @@ void Window::paint_frame_() {
     xcb_flush(conn_);
 
     damage_.clear();
-    needs_redraw_ = false;
 }
 
 // ---------------------------------------------------------------------------

@@ -224,6 +224,8 @@ void PopupImpl::paint_frame_() {
 
     render::SoftCanvas canvas;
     canvas.bind(b->pixels, b->width, b->height, b->stride / 4);
+    needs_redraw_ = false;
+
     canvas.clear(Color::rgb(0x2a2a30));
     if (frame_cb_) frame_cb_(canvas);
 
@@ -245,7 +247,6 @@ void PopupImpl::paint_frame_() {
         wl::Message m(surface_, wl::wl_surface_req::commit);
         d.send(m);
     }
-    needs_redraw_ = false;
 }
 
 void PopupImpl::tick_paint() {

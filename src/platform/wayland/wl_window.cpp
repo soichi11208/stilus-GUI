@@ -855,6 +855,8 @@ void Window::paint_frame_() {
     render::SoftCanvas canvas;
     canvas.bind(b->pixels, b->width, b->height, b->stride / 4);
 
+    needs_redraw_ = false;
+
     // Step 1: draw the titlebar (in surface logical coords). Done at the
     // canvas's initial identity transform; only the scale is applied below
     // for the user content area.
@@ -932,7 +934,6 @@ void Window::paint_frame_() {
         d_.send(m);
     }
     damage_.clear();
-    needs_redraw_ = false;
 }
 
 // ---------------------------------------------------------------------------
