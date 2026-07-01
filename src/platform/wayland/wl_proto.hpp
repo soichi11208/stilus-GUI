@@ -127,6 +127,65 @@ namespace zxdg_toplevel_decoration_v1_mode {
     constexpr uint32_t server_side = 2;
 }
 
+// xdg_toplevel.resize edge values (spec: "resize edge" — bit union of
+// top(1)/bottom(2)/left(4)/right(8) makes corners).
+namespace xdg_toplevel_resize_edge {
+    constexpr uint32_t none         = 0;
+    constexpr uint32_t top          = 1;
+    constexpr uint32_t bottom       = 2;
+    constexpr uint32_t left         = 4;
+    constexpr uint32_t top_left     = 5;
+    constexpr uint32_t bottom_left  = 6;
+    constexpr uint32_t right        = 8;
+    constexpr uint32_t top_right    = 9;
+    constexpr uint32_t bottom_right = 10;
+}
+
+// wp_cursor_shape_v1 — modern (2023+) way to request one of a fixed set of
+// named cursor shapes without loading a cursor theme ourselves.
+namespace wp_cursor_shape_manager_v1_req {
+    enum { destroy = 0, get_pointer = 1, get_tablet_tool_v2 = 2 };
+}
+namespace wp_cursor_shape_device_v1_req {
+    enum { destroy = 0, set_shape = 1 };
+}
+namespace wp_cursor_shape_device_v1_shape {
+    constexpr uint32_t default_       = 1;
+    constexpr uint32_t context_menu   = 2;
+    constexpr uint32_t help           = 3;
+    constexpr uint32_t pointer        = 4;
+    constexpr uint32_t progress       = 5;
+    constexpr uint32_t wait           = 6;
+    constexpr uint32_t cell           = 7;
+    constexpr uint32_t crosshair      = 8;
+    constexpr uint32_t text           = 9;
+    constexpr uint32_t vertical_text  = 10;
+    constexpr uint32_t alias          = 11;
+    constexpr uint32_t copy           = 12;
+    constexpr uint32_t move           = 13;
+    constexpr uint32_t no_drop        = 14;
+    constexpr uint32_t not_allowed    = 15;
+    constexpr uint32_t grab           = 16;
+    constexpr uint32_t grabbing       = 17;
+    constexpr uint32_t e_resize       = 18;
+    constexpr uint32_t n_resize       = 19;
+    constexpr uint32_t ne_resize      = 20;
+    constexpr uint32_t nw_resize      = 21;
+    constexpr uint32_t s_resize       = 22;
+    constexpr uint32_t se_resize      = 23;
+    constexpr uint32_t sw_resize      = 24;
+    constexpr uint32_t w_resize       = 25;
+    constexpr uint32_t ew_resize      = 26;
+    constexpr uint32_t ns_resize      = 27;
+    constexpr uint32_t nesw_resize    = 28;
+    constexpr uint32_t nwse_resize    = 29;
+    constexpr uint32_t col_resize     = 30;
+    constexpr uint32_t row_resize     = 31;
+    constexpr uint32_t all_scroll     = 32;
+    constexpr uint32_t zoom_in        = 33;
+    constexpr uint32_t zoom_out       = 34;
+}
+
 // wl_output (core, version >= 2 needed for the scale event).
 namespace wl_output_req { enum { release = 0 }; }
 namespace wl_output_evt {

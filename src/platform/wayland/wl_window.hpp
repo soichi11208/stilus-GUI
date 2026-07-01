@@ -114,11 +114,22 @@ private:
     // close / minimize / maximize).
     bool csd_enabled_       = false;
     int  csd_titlebar_h_    = 28;
+    // Border zone (in surface-logical pixels) around the CSD frame. Clicks
+    // starting inside this zone start an interactive resize instead of a
+    // window move or content-area event. Kept modest (~5 px) so it doesn't
+    // steal pointer events from the user's content.
+    int  csd_border_       = 5;
     bool csd_maximized_     = false;
     int  csd_hover_button_  = -1;   // 0=min 1=max 2=close, -1=none
     int  csd_pressed_button_= -1;
     uint32_t last_pointer_serial_ = 0;
     uint32_t last_pointer_enter_serial_ = 0;
+    // Last cursor shape we asked the compositor for. Tracked so we only send
+    // set_shape when the desired shape actually changes.
+    uint32_t applied_cursor_shape_ = 0;
+    // wp_cursor_shape_v1 objects (both 0 if the compositor doesn't offer it).
+    wl::ObjectId cursor_shape_manager_ = 0;
+    wl::ObjectId cursor_shape_device_  = 0;
     // Helpers
     int  csd_titlebar_h_eff_() const { return csd_enabled_ ? csd_titlebar_h_ : 0; }
     int  csd_button_at_(float x, float y) const; // -1 if outside any button
@@ -127,6 +138,18 @@ private:
     // should skip widget dispatch in that case.
     bool csd_handle_pointer_button_(uint32_t serial, bool pressed, float x, float y);
     bool csd_update_hover_(float x, float y);
+    // Compute the resize-edge bitmask (xdg_toplevel_resize_edge) at
+    // surface-local (logical) coords (x, y), or 0 if the point is not
+    // inside a resize border. Maximized windows can't be resized so this
+    // always returns 0 in that state.
+    uint32_t csd_resize_edge_at_(float x, float y) const;
+    // Ask the compositor to render `shape` (wp_cursor_shape_device_v1_shape).
+    // No-op if the extension isn't available or the shape is already applied.
+    void set_cursor_shape_(uint32_t shape);
+    // Pick the cursor shape appropriate to the current pointer position and
+    // apply it. Handles CSD zones (edges/titlebar/buttons/content) and
+    // no-ops when the pointer isn't in the surface.
+    void update_cursor_for_position_(float x, float y);
     // text-input-unstable-v3 (IME). Manager is bound if the compositor
     // advertises it; text_input_ is created lazily once we also have a seat.
     wl::ObjectId text_input_manager_ = 0;

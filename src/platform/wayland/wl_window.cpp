@@ -68,6 +68,11 @@ Window::~Window() {
     for (auto& b : buffers_) destroy_buffer_(*b);
     buffers_.clear();
     // Server side cleanup best-effort. The display dtor closes the socket.
+    if (cursor_shape_device_) {
+        wl::Message m(cursor_shape_device_,
+                      wl::wp_cursor_shape_device_v1_req::destroy);
+        d_.send(m);
+    }
     if (toplevel_decoration_) {
         wl::Message m(toplevel_decoration_,
                       wl::zxdg_toplevel_decoration_v1_req::destroy);
@@ -186,6 +191,9 @@ bool Window::init() {
                 } else if (interface == "zxdg_decoration_manager_v1"
                            && !decoration_manager_) {
                     bind(std::min<uint32_t>(version, 1u), decoration_manager_);
+                } else if (interface == "wp_cursor_shape_manager_v1"
+                           && !cursor_shape_manager_) {
+                    bind(std::min<uint32_t>(version, 1u), cursor_shape_manager_);
                 } else if (interface == "zwp_text_input_manager_v3"
                            && !text_input_manager_) {
                     bind(std::min<uint32_t>(version, 1u), text_input_manager_);
@@ -584,10 +592,83 @@ bool Window::csd_update_hover_(float x, float y) {
     return false;
 }
 
+void Window::set_cursor_shape_(uint32_t shape) {
+    if (!cursor_shape_device_) return;
+    if (shape == applied_cursor_shape_) return;
+    // set_shape needs the *pointer.enter* serial, not an arbitrary one:
+    // the compositor uses it to scope the request to the current focus.
+    if (last_pointer_enter_serial_ == 0) return;
+    wl::Message m(cursor_shape_device_,
+                  wl::wp_cursor_shape_device_v1_req::set_shape);
+    m.u32(last_pointer_enter_serial_);
+    m.u32(shape);
+    d_.send(m);
+    applied_cursor_shape_ = shape;
+}
+
+void Window::update_cursor_for_position_(float x, float y) {
+    namespace S = wl::wp_cursor_shape_device_v1_shape;
+    // Edge zones take priority over titlebar/content — they overlap the
+    // titlebar's top edge, and the user's intent when they mouse into the
+    // corner is clearly "resize", not "drag".
+    uint32_t edge = csd_resize_edge_at_(x, y);
+    if (edge != 0) {
+        uint32_t shape;
+        switch (edge) {
+        case wl::xdg_toplevel_resize_edge::top:          shape = S::n_resize;   break;
+        case wl::xdg_toplevel_resize_edge::bottom:       shape = S::s_resize;   break;
+        case wl::xdg_toplevel_resize_edge::left:         shape = S::w_resize;   break;
+        case wl::xdg_toplevel_resize_edge::right:        shape = S::e_resize;   break;
+        case wl::xdg_toplevel_resize_edge::top_left:     shape = S::nw_resize;  break;
+        case wl::xdg_toplevel_resize_edge::top_right:    shape = S::ne_resize;  break;
+        case wl::xdg_toplevel_resize_edge::bottom_left:  shape = S::sw_resize;  break;
+        case wl::xdg_toplevel_resize_edge::bottom_right: shape = S::se_resize;  break;
+        default: shape = S::default_; break;
+        }
+        set_cursor_shape_(shape);
+        return;
+    }
+    // Non-edge default: the compositor picks the platform default arrow.
+    // (Content-area cursor customisation could be exposed to widgets later;
+    // for now every non-edge point gets the arrow.)
+    set_cursor_shape_(S::default_);
+}
+
+uint32_t Window::csd_resize_edge_at_(float x, float y) const {
+    // No resizing while maximized — the compositor will just refuse it.
+    if (!csd_enabled_ || csd_maximized_) return 0;
+    const float b  = float(csd_border_);
+    const float W  = float(width_);
+    const float TB = float(csd_titlebar_h_);
+    // The full surface (buffer) height includes the titlebar.
+    const float H  = float(height_) + TB;
+    if (x < 0 || y < 0 || x >= W || y >= H) return 0;
+
+    uint32_t e = 0;
+    if (x < b)        e |= wl::xdg_toplevel_resize_edge::left;
+    else if (x >= W - b) e |= wl::xdg_toplevel_resize_edge::right;
+    if (y < b)        e |= wl::xdg_toplevel_resize_edge::top;
+    else if (y >= H - b) e |= wl::xdg_toplevel_resize_edge::bottom;
+    return e;
+}
+
 bool Window::csd_handle_pointer_button_(uint32_t serial, bool pressed,
                                         float x, float y) {
     if (!csd_enabled_) return false;
     if (pressed) {
+        // Edge border: kick off an interactive resize. The compositor takes
+        // over the pointer for the duration of the drag, so we never see
+        // motion/release events for it — no local state to track.
+        if (uint32_t edge = csd_resize_edge_at_(x, y); edge != 0) {
+            if (seat_) {
+                wl::Message m(xdg_toplevel_, wl::xdg_toplevel_req::resize);
+                m.object(seat_);
+                m.u32(serial);
+                m.u32(edge);
+                d_.send(m);
+            }
+            return true;
+        }
         if (y >= float(csd_titlebar_h_)) return false;
         int btn = csd_button_at_(x, y);
         csd_pressed_button_ = btn;
@@ -776,6 +857,17 @@ void Window::setup_seat_(uint32_t caps) {
                    const int*, size_t) {
                 on_pointer_event_(op, pl, n);
             });
+        // If the compositor offers wp_cursor_shape_v1, obtain a shape device
+        // bound to our pointer. Without this we'd have to load and blit a
+        // cursor theme ourselves — the point of the extension is to skip that.
+        if (cursor_shape_manager_ && !cursor_shape_device_) {
+            cursor_shape_device_ = d_.new_id();
+            wl::Message gm(cursor_shape_manager_,
+                           wl::wp_cursor_shape_manager_v1_req::get_pointer);
+            gm.new_id(cursor_shape_device_);
+            gm.object(pointer_);
+            d_.send(gm);
+        }
     }
     // Keyboard
     if ((caps & wl::wl_seat_caps::keyboard) && !keyboard_) {
@@ -831,7 +923,11 @@ void Window::on_pointer_event_(uint16_t op, const uint8_t* pl, size_t n) {
         float y = wl::fixed_to_float(r.i32());
         mouse_x_ = x; mouse_y_ = y;
         mouse_in_ = true;
+        // Re-arm the cached cursor shape: the enter serial we just received
+        // is the one wp_cursor_shape_v1 needs for its next set_shape call.
+        applied_cursor_shape_ = 0;
         if (csd_enabled_) csd_update_hover_(x, y);
+        update_cursor_for_position_(x, y);
         if (event_cb_ && y >= tb) {
             Event e; e.type = Event::Type::MouseMove;
             e.x = x; e.y = y - tb;
@@ -841,6 +937,9 @@ void Window::on_pointer_event_(uint16_t op, const uint8_t* pl, size_t n) {
     }
     case wl::wl_pointer_evt::leave: {
         mouse_in_ = false;
+        // The compositor will send a fresh serial when the pointer re-enters.
+        last_pointer_enter_serial_ = 0;
+        applied_cursor_shape_ = 0;
         if (csd_enabled_ && csd_hover_button_ != -1) {
             csd_hover_button_ = -1;
             damage_.mark_full();
@@ -854,6 +953,7 @@ void Window::on_pointer_event_(uint16_t op, const uint8_t* pl, size_t n) {
         float y = wl::fixed_to_float(r.i32());
         mouse_x_ = x; mouse_y_ = y;
         if (csd_enabled_) csd_update_hover_(x, y);
+        update_cursor_for_position_(x, y);
         if (event_cb_ && y >= tb) {
             Event e; e.type = Event::Type::MouseMove;
             e.x = x; e.y = y - tb;
