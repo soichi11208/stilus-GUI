@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install fonts used by text tests, Xvfb, and X11 auth link deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            fonts-dejavu-core fonts-noto-cjk xvfb libxau-dev libxdmcp-dev
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Run headless unit + golden-image tests
+        working-directory: build
+        run: ctest --output-on-failure
+
+      - name: Run X11 integration smoke test (Xvfb)
+        working-directory: build
+        run: xvfb-run -a env -u WAYLAND_DISPLAY ./test_x11_integration

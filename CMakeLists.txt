@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
-project(stilus CXX)
+project(stilus VERSION 0.1.0 LANGUAGES CXX)
+
+include(GNUInstallDirs)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -55,6 +57,31 @@ set(XCB_LIBS
 target_link_libraries(stilus PRIVATE ${XCB_LIBS} Xau Xdmcp)
 
 # ---------------------------------------------------------------------------
+# Install
+# ---------------------------------------------------------------------------
+# Library + public headers.
+install(TARGETS stilus ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(DIRECTORY include/stilus DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+# Vendored XCB static archives, needed transitively by anything linking
+# libstilus.a on the X11 path. Installed under a stilus-private subdirectory
+# (not directly into ${libdir}) so they can never shadow a system libxcb.
+install(FILES ${XCB_LIBS}
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/stilus)
+
+# pkg-config: downstream projects that don't use CMake can still
+# `pkg-config --cflags --libs stilus`. Libs.private carries the vendored XCB
+# archives plus the Xau/Xdmcp system libs XCB itself depends on — pkg-config
+# only surfaces those to static (non-shared) consumers, matching how we
+# built libstilus.a here.
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/stilus.pc.in
+    ${CMAKE_CURRENT_BINARY_DIR}/stilus.pc
+    @ONLY)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/stilus.pc
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+
+# ---------------------------------------------------------------------------
 # Examples
 # ---------------------------------------------------------------------------
 add_executable(hello examples/hello.cpp)
@@ -88,11 +115,29 @@ target_link_libraries(backend_test PRIVATE stilus)
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+# Headless unit tests: pure logic only (geom, path flattening, damage
+# tracking, font wrapping). No window/display connection, safe for CI.
+add_executable(test_unit test/test_unit.cpp)
+target_include_directories(test_unit PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/test)
+target_link_libraries(test_unit PRIVATE stilus)
+
+# Golden-image tests: render deterministic primitives offscreen and compare
+# against checked-in reference PPMs in test/golden/.
+add_executable(test_golden test/test_golden.cpp)
+target_include_directories(test_golden PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/test)
+target_link_libraries(test_golden PRIVATE stilus)
+target_compile_definitions(test_golden PRIVATE
+    STILUS_TEST_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/golden")
+
+# X11 integration smoke test: opens a real window against a running X
+# server (use xvfb-run in headless environments/CI).
 add_executable(test_x11_integration
     test/test_x11_integration.cpp
-    test/integration/x11_thermal.cpp
-    test/integration/x11_gpu.cpp
-    test/integration/x11_display.cpp
+    test/integration/x11_smoke.cpp
 )
 target_include_directories(test_x11_integration PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/test)
 target_link_libraries(test_x11_integration PRIVATE stilus)
+
+enable_testing()
+add_test(NAME unit   COMMAND test_unit)
+add_test(NAME golden COMMAND test_golden)
