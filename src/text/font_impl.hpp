@@ -20,6 +20,7 @@ struct GlyphBitmap {
     int x_off = 0;              // offset from pen origin (left of bitmap)
     int y_off = 0;              // offset from baseline (top of bitmap, usually negative)
     float advance = 0;          // advance width in pixels
+    float bitmap_scale = 1.0f;  // source bitmap pixels per logical pixel
     bool  is_color = false;
 };
 

@@ -255,17 +255,28 @@ const GlyphBitmap* Font::Impl::glyph(uint32_t cp) const {
     stbtt_GetCodepointHMetrics(info.get(), int(cp), &advance, &lsb);
     g.advance = advance * scale;
 
+    // Rasterize monochrome glyphs at higher resolution and downsample in the
+    // canvas. This keeps small text smoother without changing layout metrics.
+    constexpr float kGlyphOversample = 2.0f;
+    float render_scale = scale * kGlyphOversample;
     int x0, y0, x1, y1;
-    stbtt_GetCodepointBitmapBox(info.get(), int(cp), scale, scale,
-                                &x0, &y0, &x1, &y1);
-    g.w = x1 - x0; g.h = y1 - y0;
+    stbtt_GetCodepointBitmapBoxSubpixel(
+        info.get(), int(cp), render_scale, render_scale,
+        0.0f, 0.0f, &x0, &y0, &x1, &y1);
+    g.w = x1 - x0;
+    g.h = y1 - y0;
     g.x_off = x0;
     g.y_off = y0;
+    g.bitmap_scale = kGlyphOversample;
 
     if (g.w > 0 && g.h > 0) {
         g.alpha.assign(size_t(g.w) * size_t(g.h), 0);
-        stbtt_MakeCodepointBitmap(info.get(), g.alpha.data(),
-                                  g.w, g.h, g.w, scale, scale, int(cp));
+        stbtt_MakeCodepointBitmapSubpixel(
+            info.get(), g.alpha.data(),
+            g.w, g.h, g.w,
+            render_scale, render_scale,
+            0.0f, 0.0f,
+            int(cp));
     }
     auto [ins, _] = cache.emplace(cp, std::move(g));
     return &ins->second;

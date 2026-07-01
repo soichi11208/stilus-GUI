@@ -1,11 +1,11 @@
-prefix=@CMAKE_INSTALL_PREFIX@
+prefix=@PREFIX@
 exec_prefix=${prefix}
-libdir=${exec_prefix}/@CMAKE_INSTALL_LIBDIR@
-includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+libdir=${exec_prefix}/@LIBDIR@
+includedir=${prefix}/@INCLUDEDIR@
 
 Name: stilus
 Description: Minimal, statically-linkable C++ GUI toolkit (Linux/Wayland/X11)
-Version: @PROJECT_VERSION@
+Version: @VERSION@
 Libs: -L${libdir} -lstilus
-Libs.private: -L${libdir}/stilus -lxcb -lxcb-render -lxcb-shm -lxcb-xkb -lXau -lXdmcp
+Libs.private: @XCCLIB@ @X11_PRIV@
 Cflags: -I${includedir}

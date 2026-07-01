@@ -1,4 +1,5 @@
 build/
+builddir/
 xcb-build/
 .opencode/
 *.o
@@ -10,3 +11,8 @@ compile_commands.json
 .idea/
 *.swp
 *~
+meson-logs/
+meson-info/
+meson-private/
+build.ninja
+ninja_log*

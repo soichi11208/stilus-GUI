@@ -12,21 +12,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install fonts used by text tests, Xvfb, and X11 auth link deps
+      - name: Install build tools, fonts used by text tests, Xvfb, and X11 auth link deps
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
+            g++ meson ninja-build pkg-config \
             fonts-dejavu-core fonts-noto-cjk xvfb libxau-dev libxdmcp-dev
 
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+        run: meson setup build --buildtype=debugoptimized
 
       - name: Build
-        run: cmake --build build -j"$(nproc)"
+        run: meson compile -C build
 
       - name: Run headless unit + golden-image tests
-        working-directory: build
-        run: ctest --output-on-failure
+        run: meson test -C build --print-errorlogs
 
       - name: Run X11 integration smoke test (Xvfb)
         working-directory: build

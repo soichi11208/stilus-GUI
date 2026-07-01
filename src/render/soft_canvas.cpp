@@ -55,6 +55,51 @@ static inline uint32_t blend_over(uint32_t dst, Premul s) {
     return pack_xrgb(uint8_t(r), uint8_t(g), uint8_t(b));
 }
 
+static inline uint8_t lerp_u8(uint8_t a, uint8_t b, float t) {
+    return uint8_t(float(a) + (float(b) - float(a)) * t + 0.5f);
+}
+
+static uint8_t sample_alpha_linear(const uint8_t* src, int w, int h,
+                                   float x, float y) {
+    if (w <= 0 || h <= 0) return 0;
+    x = std::clamp(x, 0.0f, float(w - 1));
+    y = std::clamp(y, 0.0f, float(h - 1));
+    int x0 = int(std::floor(x));
+    int y0 = int(std::floor(y));
+    int x1 = std::min(x0 + 1, w - 1);
+    int y1 = std::min(y0 + 1, h - 1);
+    float tx = x - float(x0);
+    float ty = y - float(y0);
+    uint8_t a0 = lerp_u8(src[y0 * w + x0], src[y0 * w + x1], tx);
+    uint8_t a1 = lerp_u8(src[y1 * w + x0], src[y1 * w + x1], tx);
+    return lerp_u8(a0, a1, ty);
+}
+
+static Premul sample_premul_linear(const uint8_t* src, int w, int h,
+                                   float x, float y) {
+    if (w <= 0 || h <= 0) return {0, 0, 0, 0};
+    x = std::clamp(x, 0.0f, float(w - 1));
+    y = std::clamp(y, 0.0f, float(h - 1));
+    int x0 = int(std::floor(x));
+    int y0 = int(std::floor(y));
+    int x1 = std::min(x0 + 1, w - 1);
+    int y1 = std::min(y0 + 1, h - 1);
+    float tx = x - float(x0);
+    float ty = y - float(y0);
+
+    auto chan = [&](int px, int py, int c) -> uint8_t {
+        return src[(py * w + px) * 4 + c];
+    };
+    Premul out{};
+    uint16_t* dst[4] = {&out.r, &out.g, &out.b, &out.a};
+    for (int c = 0; c < 4; ++c) {
+        uint8_t v0 = lerp_u8(chan(x0, y0, c), chan(x1, y0, c), tx);
+        uint8_t v1 = lerp_u8(chan(x0, y1, c), chan(x1, y1, c), tx);
+        *dst[c] = lerp_u8(v0, v1, ty);
+    }
+    return out;
+}
+
 // ---------------------------------------------------------------------------
 void SoftCanvas::bind(uint32_t* px, int w, int h, int stride_px) {
     px_ = px; w_ = w; h_ = h; stride_ = stride_px;
@@ -380,12 +425,13 @@ void SoftCanvas::draw_text(Vec2 pos, std::string_view utf8,
         const Font::Impl*  fi = res.face;
 
         if (g->w > 0 && g->h > 0 && integer_scale) {
-            // Nearest-neighbor scale by m.a (x) and m.d (y).
+            float bitmap_scale = g->is_color ? 1.0f : g->bitmap_scale;
+            if (bitmap_scale <= 0.0f) bitmap_scale = 1.0f;
             float scx = m.a, scy = m.d;
-            int gx0 = int(std::round(pen_x + g->x_off * scx));
-            int gy0 = int(std::round(pen_y + g->y_off * scy));
-            int gw  = std::max(1, int(std::round(g->w * scx)));
-            int gh  = std::max(1, int(std::round(g->h * scy)));
+            int gx0 = int(std::round(pen_x + (float(g->x_off) / bitmap_scale) * scx));
+            int gy0 = int(std::round(pen_y + (float(g->y_off) / bitmap_scale) * scy));
+            int gw  = std::max(1, int(std::round((float(g->w) / bitmap_scale) * scx)));
+            int gh  = std::max(1, int(std::round((float(g->h) / bitmap_scale) * scy)));
             int gx1 = gx0 + gw;
             int gy1 = gy0 + gh;
 
@@ -399,18 +445,13 @@ void SoftCanvas::draw_text(Vec2 pos, std::string_view utf8,
             cy1 = std::min(cy1, h_);
 
             if (g->is_color) {
-                // Premultiplied RGBA source-over; the requested `c` is ignored
-                // because color glyphs carry their own hues.
+                // Premultiplied RGBA source-over; linearly filtered.
                 for (int y = cy0; y < cy1; ++y) {
-                    int sy = int(float(y - gy0) * g->h / float(gh));
-                    if (sy < 0) sy = 0; if (sy >= g->h) sy = g->h - 1;
-                    const uint8_t* srow = g->rgba.data() + sy * g->w * 4;
+                    float sy = ((float(y) + 0.5f - float(gy0)) * float(g->h) / float(gh)) - 0.5f;
                     uint32_t* row = px_ + y * stride_;
                     for (int x = cx0; x < cx1; ++x) {
-                        int sxi = int(float(x - gx0) * g->w / float(gw));
-                        if (sxi < 0) sxi = 0; if (sxi >= g->w) sxi = g->w - 1;
-                        const uint8_t* s = srow + sxi * 4;
-                        Premul sp{ s[0], s[1], s[2], s[3] };
+                        float sxp = ((float(x) + 0.5f - float(gx0)) * float(g->w) / float(gw)) - 0.5f;
+                        Premul sp = sample_premul_linear(g->rgba.data(), g->w, g->h, sxp, sy);
                         if (sp.a == 0) continue;
                         if (mask) {
                             float mv = sample_mask(x, y);
@@ -427,14 +468,11 @@ void SoftCanvas::draw_text(Vec2 pos, std::string_view utf8,
                 }
             } else {
                 for (int y = cy0; y < cy1; ++y) {
-                    int sy = int(float(y - gy0) * g->h / float(gh));
-                    if (sy < 0) sy = 0; if (sy >= g->h) sy = g->h - 1;
-                    const uint8_t* src = g->alpha.data() + sy * g->w;
+                    float sy = ((float(y) + 0.5f - float(gy0)) * float(g->h) / float(gh)) - 0.5f;
                     uint32_t* row = px_ + y * stride_;
                     for (int x = cx0; x < cx1; ++x) {
-                        int sxi = int(float(x - gx0) * g->w / float(gw));
-                        if (sxi < 0) sxi = 0; if (sxi >= g->w) sxi = g->w - 1;
-                        uint8_t a = src[sxi];
+                        float sxp = ((float(x) + 0.5f - float(gx0)) * float(g->w) / float(gw)) - 0.5f;
+                        uint8_t a = sample_alpha_linear(g->alpha.data(), g->w, g->h, sxp, sy);
                         if (!a) continue;
                         float cov = a / 255.0f;
                         if (mask) cov *= sample_mask(x, y);
