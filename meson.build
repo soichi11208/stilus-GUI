@@ -160,7 +160,7 @@ test_x11 = executable(
 # libstilus.a is static.  For the X11 path, downstream linkers need the
 # vendored XCB archives (under <libdir>/stilus/) plus libXau/libXdmcp.
 # We keep these in Libs.private so only static consumers see them.
-stilus_xcb_libdir = get_option('libdir') / 'stilus'
+stilus_xcb_libdir = '${libdir}/stilus'
 xcb_lib_names = ['xcb', 'xcb-render', 'xcb-shm', 'xcb-xfixes', 'xcb-xkb']
 xcclib = ''
 foreach n : xcb_lib_names

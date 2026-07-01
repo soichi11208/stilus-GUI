@@ -522,10 +522,12 @@ void SoftCanvas::draw_image(Vec2 pos, const PixelImage& img, float alpha) {
         for (int y = iy0; y < iy1; ++y) {
             uint32_t* row = px_ + y * stride_;
             int sy = int((y - r.y) * img.height / r.h);
-            if (sy < 0) sy = 0; if (sy >= img.height) sy = img.height - 1;
+            if (sy < 0) sy = 0;
+            if (sy >= img.height) sy = img.height - 1;
             for (int x = ix0; x < ix1; ++x) {
                 int sx2 = int((x - r.x) * img.width / r.w);
-                if (sx2 < 0) sx2 = 0; if (sx2 >= img.width) sx2 = img.width - 1;
+                if (sx2 < 0) sx2 = 0;
+                if (sx2 >= img.width) sx2 = img.width - 1;
                 const uint8_t* src = img.data.data() + (sy * img.width + sx2) * 4;
                 float cov = (src[3] / 255.0f) * alpha;
                 if (mask) cov *= sample_mask(x, y);
@@ -592,8 +594,10 @@ void SoftCanvas::push_clip_path(const Path& p, FillRule rule) {
 
     float xmin = 1e30f, xmax = -1e30f, ymin = 1e30f, ymax = -1e30f;
     for (const auto& pt : flat.pts) {
-        if (pt.x < xmin) xmin = pt.x; if (pt.x > xmax) xmax = pt.x;
-        if (pt.y < ymin) ymin = pt.y; if (pt.y > ymax) ymax = pt.y;
+        if (pt.x < xmin) xmin = pt.x;
+        if (pt.x > xmax) xmax = pt.x;
+        if (pt.y < ymin) ymin = pt.y;
+        if (pt.y > ymax) ymax = pt.y;
     }
     Rect cp = current_clip_();
     if (xmin < cp.x)        xmin = cp.x;
