@@ -33,8 +33,8 @@ add_project_link_arguments(xcb_link_args, language : 'cpp')
 # on Linux (not macOS).
 x11_deps = []
 if host_machine.system() == 'linux'
-  xau_dep = dependency('xau', required: false)
-  xdmcp_dep = dependency('xdmcp', required: false)
+  xau_dep = dependency('xau', required: false, static: true)
+  xdmcp_dep = dependency('xdmcp', required: false, static: true)
   if xau_dep.found() and xdmcp_dep.found()
     x11_deps = [xau_dep, xdmcp_dep]
   endif
