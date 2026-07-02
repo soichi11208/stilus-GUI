@@ -1,0 +1,33 @@
+# Meson cross-file: build stilus + its examples with zig-cc-driven musl,
+# statically linked end-to-end (no glibc, no libstdc++.so, no libc.so).
+#
+# Prereqs:
+#   * zig on $PATH (2024+ works fine; tested with 0.16)
+#   * The wrappers under tools/zig-musl-* on $PATH
+#   * XCB static archives built against musl in third_party/xcb-musl/lib/
+#     (see docs; scripted by "make musl-deps").
+
+[binaries]
+c        = 'zig-musl-cc'
+cpp      = 'zig-musl-cxx'
+ar       = 'zig-musl-ar'
+ranlib   = 'zig-musl-ranlib'
+strip    = 'strip'
+pkg-config = 'pkg-config'
+
+[host_machine]
+system     = 'linux'
+cpu_family = 'x86_64'
+cpu        = 'x86_64'
+endian     = 'little'
+
+[built-in options]
+c_std   = 'c17'
+cpp_std = 'c++20'
+# Fully static — nothing dynamic, not even the loader.
+c_link_args   = ['-static']
+cpp_link_args = ['-static']
+
+[properties]
+# Tell stilus's meson.build to look in a musl-specific sysroot for XCB.
+stilus_xcb_root = 'third_party/xcb-musl'

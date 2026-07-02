@@ -123,6 +123,7 @@ bool Window::init() {
     utf8_string_atom_  = intern(conn_, "UTF8_STRING");
     clipboard_atom_    = intern(conn_, "CLIPBOARD");
     targets_atom_      = intern(conn_, "TARGETS");
+    incr_atom_         = intern(conn_, "INCR");
     stilus_paste_atom_ = intern(conn_, "STILUS_PASTE");
 
     win_ = xcb_generate_id(conn_);
@@ -133,7 +134,9 @@ bool Window::init() {
         XCB_EVENT_MASK_KEY_RELEASE       | XCB_EVENT_MASK_BUTTON_PRESS |
         XCB_EVENT_MASK_BUTTON_RELEASE    | XCB_EVENT_MASK_ENTER_WINDOW |
         XCB_EVENT_MASK_LEAVE_WINDOW      | XCB_EVENT_MASK_POINTER_MOTION |
-        XCB_EVENT_MASK_STRUCTURE_NOTIFY  | XCB_EVENT_MASK_FOCUS_CHANGE
+        XCB_EVENT_MASK_STRUCTURE_NOTIFY  | XCB_EVENT_MASK_FOCUS_CHANGE |
+        // PropertyNotify is required for INCR clipboard transfers.
+        XCB_EVENT_MASK_PROPERTY_CHANGE
     };
     xcb_create_window(conn_,
         XCB_COPY_FROM_PARENT,
@@ -550,14 +553,70 @@ std::string Window::clipboard_get_text() {
     free(notify);
     if (prop == XCB_ATOM_NONE) return {};
 
-    // Fetch the property in one shot. Large clipboards (>256 KiB) would
-    // need INCR handling; skipping that for now.
-    xcb_get_property_reply_t* r = xcb_get_property_reply(conn_,
-        xcb_get_property(conn_, 1 /* delete */, win_, prop,
-                         XCB_GET_PROPERTY_TYPE_ANY, 0, 0x10000),
-        nullptr);
+    // Fetch the delivered property. 0x1000000 units of 4 bytes covers any
+    // single-shot transfer; owners that consider the data "large" answer
+    // with type INCR instead and stream it in chunks.
+    auto fetch_prop = [&]() -> xcb_get_property_reply_t* {
+        return xcb_get_property_reply(conn_,
+            xcb_get_property(conn_, 1 /* delete */, win_, prop,
+                             XCB_GET_PROPERTY_TYPE_ANY, 0, 0x1000000),
+            nullptr);
+    };
+    // Wait (bounded) for the next PropertyNotify new-value on our scratch
+    // property, dispatching unrelated events normally in the meantime.
+    auto wait_new_value = [&]() -> bool {
+        const int budget = 2000;   // ms; matches large-transfer reality
+        int waited = 0;
+        while (waited < budget) {
+            xcb_generic_event_t* ev = xcb_poll_for_event(conn_);
+            if (!ev) {
+                int fd = xcb_get_file_descriptor(conn_);
+                struct pollfd pfd{ fd, POLLIN, 0 };
+                int t = std::min(50, budget - waited);
+                ::poll(&pfd, 1, t);
+                waited += t;
+                continue;
+            }
+            uint8_t type = ev->response_type & 0x7f;
+            if (type == XCB_PROPERTY_NOTIFY) {
+                auto* pn = (xcb_property_notify_event_t*)ev;
+                bool hit = pn->window == win_ && pn->atom == prop &&
+                           pn->state == XCB_PROPERTY_NEW_VALUE;
+                free(ev);
+                if (hit) return true;
+                continue;
+            }
+            dispatch_event_(ev);
+            free(ev);
+        }
+        return false;
+    };
+
+    xcb_get_property_reply_t* r = fetch_prop();
     if (!r) return {};
+
     std::string out;
+    if (r->type == incr_atom_) {
+        // INCR protocol: our delete of the INCR property (delete=1 above)
+        // told the owner to start streaming. Each chunk arrives as a new
+        // property value; a zero-length chunk terminates the transfer.
+        free(r);
+        for (;;) {
+            if (!wait_new_value()) break;   // owner died / stalled
+            xcb_get_property_reply_t* chunk = fetch_prop();
+            if (!chunk) break;
+            int len = xcb_get_property_value_length(chunk);
+            if (len <= 0) { free(chunk); break; }   // done
+            if (chunk->type == utf8_string_atom_ ||
+                chunk->type == XCB_ATOM_STRING) {
+                out.append((const char*)xcb_get_property_value(chunk),
+                           size_t(len));
+            }
+            free(chunk);
+        }
+        return out;
+    }
+
     if (r->type == utf8_string_atom_ || r->type == XCB_ATOM_STRING) {
         const char* data = (const char*)xcb_get_property_value(r);
         int len = xcb_get_property_value_length(r);

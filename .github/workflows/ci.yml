@@ -31,3 +31,68 @@ jobs:
       - name: Run X11 integration smoke test (Xvfb)
         working-directory: build
         run: timeout 20s xvfb-run -a env -u WAYLAND_DISPLAY ./test_x11_integration
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools and fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            g++ meson ninja-build pkg-config \
+            fonts-dejavu-core fonts-noto-cjk libxau-dev libxdmcp-dev
+
+      - name: Configure (ASan + UBSan)
+        run: meson setup build-asan -Db_sanitize=address,undefined -Dbuildtype=debug
+
+      - name: Build
+        run: meson compile -C build-asan
+
+      - name: Run tests under sanitizers
+        run: meson test -C build-asan --print-errorlogs
+
+  musl-static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools and fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            meson ninja-build pkg-config \
+            fonts-dejavu-core fonts-noto-cjk xvfb
+
+      - name: Install zig (used as the musl cross C/C++ toolchain)
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.16.0
+
+      - name: Configure (musl, fully static)
+        run: |
+          export PATH="$PWD/tools:$PATH"
+          meson setup build-musl --cross-file cross-musl.txt --buildtype=release
+
+      - name: Build
+        run: |
+          export PATH="$PWD/tools:$PATH"
+          meson compile -C build-musl
+
+      - name: Verify the binaries are truly static (no dynamic deps at all)
+        run: |
+          # A statically linked ELF makes ldd fail with "not a dynamic
+          # executable" and a non-zero exit — that failure is the pass case.
+          if ldd build-musl/widget_demo; then
+            echo "expected ldd to fail (static binary), but it succeeded:"
+            exit 1
+          fi
+          echo "confirmed: widget_demo has zero dynamic dependencies"
+
+      - name: Run headless unit + golden-image + font-robustness tests
+        run: meson test -C build-musl --print-errorlogs
+
+      - name: Run X11 integration smoke test (Xvfb)
+        working-directory: build-musl
+        run: timeout 20s xvfb-run -a env -u WAYLAND_DISPLAY ./test_x11_integration

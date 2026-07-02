@@ -79,6 +79,7 @@ private:
     // Clipboard atoms.
     xcb_atom_t clipboard_atom_    = 0;
     xcb_atom_t targets_atom_      = 0;
+    xcb_atom_t incr_atom_         = 0;   // INCR — chunked selection transfers
     xcb_atom_t stilus_paste_atom_ = 0;   // scratch property for paste replies
 
     // Local clipboard state — used both to answer SelectionRequest events

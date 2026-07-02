@@ -15,11 +15,33 @@ add_project_arguments(
 )
 
 # ---------------------------------------------------------------------------
+# Link stdlib statically. libstdc++ / libgcc_s carry the GCC Runtime Library
+# Exception, so bundling them keeps zero copyleft obligations while dropping
+# the two most fragile shared-lib deps from every produced binary. glibc
+# itself is deliberately left dynamic — full-static glibc is LGPL-fragile and
+# breaks NSS-backed calls (getaddrinfo, user/group lookup, locale, iconv).
+# Cross-file (musl) selects a fully-static end result and points at its own
+# XCB sysroot; the glibc-native path keeps just libstdc++/libgcc static.
+xcb_root_rel = meson.get_external_property('stilus_xcb_root', 'third_party/xcb')
+
+if xcb_root_rel == 'third_party/xcb-musl'
+  # musl target: -static already comes from the cross-file's c/cpp_link_args.
+  # Don't add -static-libstdc++/-static-libgcc — those are pointless (and
+  # tickle warnings) under a static-libc link.
+else
+  add_project_link_arguments(
+    '-static-libstdc++', '-static-libgcc',
+    language : 'cpp',
+  )
+endif
+
+# ---------------------------------------------------------------------------
 # Dependencies
 # ---------------------------------------------------------------------------
 # XCB prebuilt static archives (vendored, never shadow system libxcb).
 # These are prebuilt, so we add them to the link command via add_project_link_arguments.
-xcb_src_root = meson.project_source_root() / 'third_party' / 'xcb' / 'lib'
+xcb_root      = meson.project_source_root() / xcb_root_rel
+xcb_src_root  = xcb_root / 'lib'
 xcb_link_args = [
   xcb_src_root / 'libxcb.a',
   xcb_src_root / 'libxcb-render.a',
@@ -29,14 +51,22 @@ xcb_link_args = [
 ]
 add_project_link_arguments(xcb_link_args, language : 'cpp')
 
-# Xau / Xdmcp — X11 auth libs that XCB transitively depends on. Only needed
-# on Linux (not macOS).
+# Xau / Xdmcp — X11 auth libs that XCB transitively depends on. When we
+# vendor a musl XCB we vendor musl Xau/Xdmcp alongside it; otherwise fall
+# back to pkg-config to find the system copies.
 x11_deps = []
 if host_machine.system() == 'linux'
-  xau_dep = dependency('xau', required: false, static: true)
-  xdmcp_dep = dependency('xdmcp', required: false, static: true)
-  if xau_dep.found() and xdmcp_dep.found()
-    x11_deps = [xau_dep, xdmcp_dep]
+  if xcb_root_rel == 'third_party/xcb-musl'
+    add_project_link_arguments(
+      xcb_src_root / 'libXau.a',
+      xcb_src_root / 'libXdmcp.a',
+      language : 'cpp')
+  else
+    xau_dep = dependency('xau', required: false, static: true)
+    xdmcp_dep = dependency('xdmcp', required: false, static: true)
+    if xau_dep.found() and xdmcp_dep.found()
+      x11_deps = [xau_dep, xdmcp_dep]
+    endif
   endif
 endif
 
@@ -73,7 +103,7 @@ stilus = static_library(
   include_directories : include_directories(
     'include',
     'src',
-    'third_party/xcb/include',
+    xcb_root_rel / 'include',
     'third_party',
   ),
   dependencies : x11_deps,
@@ -142,6 +172,16 @@ test_golden = executable(
   install : false,
 )
 test('golden', test_golden)
+
+test_font_robustness = executable(
+  'test_font_robustness',
+  'test/test_font_robustness.cpp',
+  include_directories : include_directories('test', 'src'),
+  dependencies : stilus_dep,
+  install : false,
+)
+# Bit-flip fuzzing over full system fonts takes a few seconds; give headroom.
+test('font_robustness', test_font_robustness, timeout : 120)
 
 test_x11 = executable(
   'test_x11_integration',

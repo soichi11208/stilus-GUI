@@ -14,7 +14,11 @@
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG          // only PNG — CBDT emoji use PNG data
 #define STBI_NO_STDIO          // we always decode from memory
+// With STBI_ONLY_PNG some overflow-check helpers are compiled but unused.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
 #include "stb/stb_image.h"
+#pragma GCC diagnostic pop
 
 namespace stilus {
 
@@ -27,6 +31,32 @@ static uint32_t be32(const uint8_t* p) {
 }
 static constexpr uint32_t kTagCBDT = 0x43424454u; // 'CBDT'
 static constexpr uint32_t kTagCBLC = 0x4342'4C43u; // 'CBLC'
+
+// Validate the SFNT structure at `fontstart` well enough that stb_truetype's
+// unchecked reads stay within the buffer: header magic, table directory
+// bounds, and every table's (offset, length) range. stb_truetype explicitly
+// does no bounds checking ("Not safe on untrusted fonts"), so this pre-pass
+// is what stands between a truncated/corrupt font file and a wild read.
+static bool sfnt_validate(const uint8_t* data, size_t len, uint32_t fontstart) {
+    if (fontstart > len || len - fontstart < 12) return false;
+    const uint8_t* p = data + fontstart;
+    uint32_t ver = be32(p);
+    if (ver != 0x00010000u && ver != 0x4F54544Fu /*OTTO*/ &&
+        ver != 0x74727565u /*true*/ && ver != 0x74797031u /*typ1*/)
+        return false;
+    uint32_t numTables = be16(p + 4);
+    // Directory must fit.
+    if (numTables > 4096) return false;
+    uint64_t dir_end = uint64_t(fontstart) + 12 + uint64_t(numTables) * 16;
+    if (dir_end > len) return false;
+    for (uint32_t i = 0; i < numTables; ++i) {
+        const uint8_t* e = p + 12 + i * 16;
+        uint64_t off = be32(e + 8);
+        uint64_t tl  = be32(e + 12);
+        if (off + tl > len || off + tl < off) return false;
+    }
+    return true;
+}
 
 // Locate an SFNT table inside a face at `fontstart`. Populates {off, len} in
 // file-absolute units. Returns false if the table isn't present.
@@ -291,12 +321,27 @@ Font& Font::operator=(Font&&) noexcept = default;
 Font Font::from_memory(std::vector<uint8_t> bytes, float pixel_size,
                        int face_index) {
     Font f;
+    // Reject anything smaller than an SFNT offset table before handing the
+    // buffer to stb_truetype — it dereferences the data pointer without a
+    // length check, so an empty vector (data() == nullptr) would crash.
+    if (bytes.size() < 12) return f;
+    // For TrueType collections, stbtt_GetFontOffsetForIndex reads the TTC
+    // header entry for `face_index` without a bounds check — verify it fits.
+    if (be32(bytes.data()) == 0x74746366u /*ttcf*/) {
+        uint64_t need = 12u + 4u * (uint64_t(face_index) + 1);
+        if (face_index < 0 || need > bytes.size()) return f;
+        uint32_t n_fonts = be32(bytes.data() + 8);
+        if (uint32_t(face_index) >= n_fonts) return f;
+    }
+
     auto p     = std::make_unique<Impl>();
     p->ttf     = std::move(bytes);
     p->info    = std::make_unique<stbtt_fontinfo>();
 
     int offset = stbtt_GetFontOffsetForIndex(p->ttf.data(), face_index);
     if (offset < 0) return f;
+    if (!sfnt_validate(p->ttf.data(), p->ttf.size(), uint32_t(offset)))
+        return f;
     if (!stbtt_InitFont(p->info.get(), p->ttf.data(), offset)) return f;
 
     p->fontstart = uint32_t(offset);
