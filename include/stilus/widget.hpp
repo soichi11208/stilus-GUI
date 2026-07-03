@@ -140,6 +140,19 @@ public:
     bool dispatch_event(const Event& e) override;
     Widget* hit(Vec2 p) override;
 
+    // True if this Flex or ANY descendant currently wants capture (e.g. an
+    // open ComboBox nested a few levels down). Without this, an ancestor
+    // Flex's mouse routing only ever checks its own direct children for
+    // wants_capture(), so a capturing widget more than one level deep is
+    // invisible to it — clicks landing in the overlay (which can extend
+    // outside every ancestor's own laid-out rect) never reach the widget
+    // that opened it. Recursing here makes the existing direct-children
+    // check in dispatch_event correct at every nesting depth.
+    bool wants_capture() const override {
+        for (auto& ch : children_) if (ch.w->wants_capture()) return true;
+        return false;
+    }
+
     size_t  child_count() const override { return children_.size(); }
     Widget* child(size_t i) override { return children_[i].w.get(); }
 

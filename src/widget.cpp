@@ -37,7 +37,9 @@ Size Flex::measure(const Constraints& c) {
     for (size_t i = 0; i < n; ++i) {
         auto& ch = children_[i];
         if (ch.flex > 0) { total_flex += ch.flex; continue; }
-        Constraints cc{0, max_main, 0, max_cross};
+        Constraints cc = horz
+            ? Constraints{0, max_main,  0, max_cross}
+            : Constraints{0, max_cross, 0, max_main};
         if (ch.fixed >= 0) {
             if (horz) cc = cc.tighten_w(ch.fixed);
             else      cc = cc.tighten_h(ch.fixed);
@@ -58,7 +60,9 @@ Size Flex::measure(const Constraints& c) {
         auto& ch = children_[i];
         if (ch.flex <= 0) continue;
         float main = remaining * (ch.flex / total_flex);
-        Constraints cc{0, max_main, 0, max_cross};
+        Constraints cc = horz
+            ? Constraints{0, max_main,  0, max_cross}
+            : Constraints{0, max_cross, 0, max_main};
         if (horz) cc = cc.tighten_w(main);
         else      cc = cc.tighten_h(main);
         sizes[i] = ch.w->measure(cc);
@@ -99,7 +103,9 @@ void Flex::layout(Rect r) {
     for (size_t i = 0; i < n; ++i) {
         auto& ch = children_[i];
         if (ch.flex > 0) { total_flex += ch.flex; continue; }
-        Constraints cc{0, inner_main, 0, inner_cross};
+        Constraints cc = horz
+            ? Constraints{0, inner_main,  0, inner_cross}
+            : Constraints{0, inner_cross, 0, inner_main};
         if (ch.fixed >= 0) {
             if (horz) cc = cc.tighten_w(ch.fixed);
             else      cc = cc.tighten_h(ch.fixed);
@@ -114,7 +120,9 @@ void Flex::layout(Rect r) {
         auto& ch = children_[i];
         if (ch.flex <= 0) continue;
         float main = remaining * (ch.flex / total_flex);
-        Constraints cc{0, inner_main, 0, inner_cross};
+        Constraints cc = horz
+            ? Constraints{0, inner_main,  0, inner_cross}
+            : Constraints{0, inner_cross, 0, inner_main};
         if (horz) cc = cc.tighten_w(main);
         else      cc = cc.tighten_h(main);
         sizes[i] = ch.w->measure(cc);

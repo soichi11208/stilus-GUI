@@ -19,6 +19,8 @@ public:
     Label& color(Color c)        { color_ = c; has_color_ = true; return *this; }
     Label& font_size(float px)   { pixel_size_ = px; return *this; }
     Label& bold(bool b = true)   { bold_ = b;        return *this; }
+    const std::string& text() const { return text_; }
+    void text(std::string s) { text_ = std::move(s); invalidate(); }
 
     Size measure(const Constraints& c) override;
     void paint(Canvas& c, const Theme& t) override;
@@ -265,6 +267,33 @@ public:
 
     const std::string& text() const { return selected_value_; }
     int selected_index() const { return selected_idx_; }
+
+    // Programmatically select an item by position in `items_` (not by its
+    // `.index` field) — for restoring persisted settings when building the
+    // widget tree. Does not fire on_select (mirrors the constructor's
+    // "initial state" semantics; callers that need the callback should
+    // invoke it themselves).
+    ComboBox& select(int pos) {
+        if (pos >= 0 && pos < int(items_.size())) {
+            selected_idx_   = pos;
+            selected_value_ = items_[pos].label;
+            invalidate();
+        }
+        return *this;
+    }
+
+    // Replace the item list wholesale (e.g. after rescanning devices).
+    // Closes any open dropdown and clears the current selection — callers
+    // that want to preserve a selection should call select() afterward.
+    ComboBox& set_items(std::vector<Item> items) {
+        items_          = std::move(items);
+        selected_idx_   = -1;
+        selected_value_.clear();
+        hovered_item_   = -1;
+        open_           = false;
+        invalidate_all_();
+        return *this;
+    }
 
     bool wants_capture() const override { return open_; }
     bool focusable() const override { return true; }
