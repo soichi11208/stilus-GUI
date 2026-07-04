@@ -10,6 +10,7 @@ Linux向けのミニマルで完全静的リンク可能なC++20 GUIツールキ
 ## ドキュメント
 
 - [**docs/gui.md**](docs/gui.md) — GUI アプリを書くためのガイド。ウィンドウ・ウィジェット一覧・レイアウト・イベント・テーマ・ハマりどころ。
+- [**README_en.md**](README_en.md) — English version of this README
 
 ## 機能
 
