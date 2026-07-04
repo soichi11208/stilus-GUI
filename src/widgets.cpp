@@ -533,10 +533,15 @@ Widget* Container::hit(Vec2 p) {
 // ScrollView
 // ---------------------------------------------------------------------------
 Size ScrollView::measure(const Constraints& c) {
-    Size s{std::min(c.max_w, 400.f), std::min(c.max_h, 300.f)};
-    if (s.w < c.min_w) s.w = c.min_w;
-    if (s.h < c.min_h) s.h = c.min_h;
-    return s;
+    // Occupy whatever space the parent gives us — the whole point of a
+    // ScrollView is that its viewport can be any size, and content that
+    // doesn't fit gets scrolled. Callers who want a smaller viewport
+    // constrain via their Flex (fixed / max child height).
+    float w = c.max_w < 1e8f ? c.max_w : 400.f;
+    float h = c.max_h < 1e8f ? c.max_h : 300.f;
+    if (w < c.min_w) w = c.min_w;
+    if (h < c.min_h) h = c.min_h;
+    return {w, h};
 }
 
 void ScrollView::layout(Rect r) {
@@ -560,12 +565,16 @@ void ScrollView::layout(Rect r) {
 }
 
 void ScrollView::paint(Canvas& c, const Theme& t) {
-    // Background
-    c.fill_rounded_rect(rect_, t.radius * 0.7f, t.surface);
-    c.stroke_rounded_rect(rect_, t.radius * 0.7f, 1.f, t.border);
+    if (show_frame_) {
+        c.fill_rounded_rect(rect_, t.radius * 0.7f, t.surface);
+        c.stroke_rounded_rect(rect_, t.radius * 0.7f, 1.f, t.border);
+    }
 
-    // Clip children to viewport
-    Rect clip{rect_.x + 1, rect_.y + 1, rect_.w - 14, rect_.h - 2};
+    // Clip children to viewport (skip 1px on each side when there's a frame
+    // so the border isn't overwritten by content pixels).
+    float inset = show_frame_ ? 1.f : 0.f;
+    Rect clip{rect_.x + inset, rect_.y + inset,
+              rect_.w - 14, rect_.h - inset * 2};
     c.push_clip(clip);
 
     // Translate for scroll offset
@@ -592,6 +601,29 @@ void ScrollView::paint(Canvas& c, const Theme& t) {
     }
 }
 
+// paint() runs first for the whole tree, then paint_overlay() runs so
+// dropdown/tooltip overlays paint above later-drawn siblings. Since we
+// scroll children with a push_translate in paint(), we must repeat that
+// translate here — otherwise a ComboBox inside a scrolled ScrollView pops
+// its dropdown at its un-scrolled y position while the ComboBox itself
+// draws at the scrolled position. We deliberately don't push_clip: dropdowns
+// often need to extend past the viewport (below the last visible item), and
+// that's the whole point of a separate overlay pass.
+void ScrollView::paint_overlay(Canvas& c, const Theme& t) {
+    c.push_translate({0, -scroll_y_});
+    for (size_t i = 0; i < content_->child_count(); ++i) {
+        content_->child(i)->paint_overlay(c, t);
+    }
+    c.pop_translate();
+}
+
+bool ScrollView::wants_capture() const {
+    for (size_t i = 0; i < content_->child_count(); ++i) {
+        if (content_->child(i)->wants_capture()) return true;
+    }
+    return false;
+}
+
 bool ScrollView::dispatch_event(const Event& e) {
     using T = Event::Type;
     const bool is_mouse =
@@ -602,6 +634,15 @@ bool ScrollView::dispatch_event(const Event& e) {
     }
 
     if (is_mouse) {
+        // If a descendant wants to capture (open ComboBox etc.), forward
+        // the event with the scroll offset applied *before* the viewport
+        // rejection check. Otherwise a dropdown that extended below the
+        // ScrollView's own rect would never see the click that closes it.
+        if (wants_capture()) {
+            Event adj = e; adj.y += scroll_y_;
+            if (content_->dispatch_event(adj)) return true;
+        }
+
         // Scrollbar (and outside-of-viewport clicks) are handled locally.
         float scrollbar_x = rect_.x + rect_.w - 10;
         if (!rect_.contains({e.x, e.y})) {

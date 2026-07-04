@@ -232,9 +232,28 @@ public:
         return *this;
     }
 
+    // Draw a rounded background + border around the viewport. Defaults to
+    // true (matches the original behaviour). Turn off when wrapping an
+    // entire form / page — a full-window scroll region shouldn't paint its
+    // own chrome.
+    ScrollView& show_frame(bool v) { show_frame_ = v; return *this; }
+
+    // Propagate gap/padding into the internal Flex holding the children.
+    // (Cross-align stays at Stretch since horizontal scrolling isn't
+    // supported; a non-stretch value there would only leave dead space.)
+    ScrollView& padding(float p) { content_->padding(p); return *this; }
+    ScrollView& gap(float g)     { content_->gap(g);     return *this; }
+
+    // True while wants_capture propagates from a descendant (e.g. an open
+    // ComboBox). Same rationale as Flex::wants_capture: a container has to
+    // volunteer capture on behalf of its subtree, otherwise ancestor
+    // dispatch_event calls skip it and events go astray.
+    bool wants_capture() const override;
+
     Size measure(const Constraints& c) override;
     void layout(Rect r) override;
     void paint(Canvas& c, const Theme& t) override;
+    void paint_overlay(Canvas& c, const Theme& t) override;
     bool dispatch_event(const Event& e) override;
     bool on_event(const Event& e) override;
     Widget* hit(Vec2 p) override;
@@ -246,6 +265,7 @@ private:
     std::unique_ptr<Flex> content_;
     float scroll_y_ = 0;
     float content_h_ = 0;
+    bool  show_frame_ = true;
 };
 
 // ----------------------------------------------------------------------------
