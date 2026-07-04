@@ -4,8 +4,10 @@
 # which Meson doesn't recognise, so it aborts with
 # "Unable to detect linker for compiler". zig cc's actual linker IS LLD, so
 # we short-circuit that specific probe with a Meson-parseable LLD string.
-if [ $# -eq 1 ] && [ "$1" = "-Wl,--version" ]; then
-    echo "LLD 15.0.0 (compatible with GNU linkers)"
-    exit 0
-fi
+for a in "$@"; do
+    if [ "$a" = "-Wl,--version" ]; then
+        echo "LLD 15.0.0 (compatible with GNU linkers)"
+        exit 0
+    fi
+done
 exec zig cc -target x86_64-linux-musl "$@"
