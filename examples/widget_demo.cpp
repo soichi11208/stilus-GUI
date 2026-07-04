@@ -142,10 +142,22 @@ int main() {
     if (!win.is_open()) return 1;
 
     auto& t = win.theme();
-    t.font      = std::make_shared<stilus::Font>(stilus::Font::from_file(
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16.0f));
-    t.font_bold = std::make_shared<stilus::Font>(stilus::Font::from_file(
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16.0f));
+
+    // Primary + CJK fallback so IME preedit/committed text (Japanese etc.)
+    // actually renders instead of falling through as tofu.
+    auto load_with_cjk = [](const char* main, float px) {
+        auto f = stilus::Font::from_file(main, px);
+        if (f.valid()) {
+            auto cjk = stilus::Font::from_file(
+                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", px, 0);
+            if (cjk.valid()) f.add_fallback(std::move(cjk));
+        }
+        return f;
+    };
+    t.font      = std::make_shared<stilus::Font>(
+        load_with_cjk("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",      16.0f));
+    t.font_bold = std::make_shared<stilus::Font>(
+        load_with_cjk("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16.0f));
 
     auto root = stilus::column();
     root->padding(16).gap(10).cross(stilus::CrossAlign::Stretch);

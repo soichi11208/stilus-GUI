@@ -102,6 +102,12 @@ public:
     void paint(Canvas& c, const Theme& t) override;
     bool on_event(const Event& e) override;
     bool focusable() const override { return true; }
+    // Toggle IME preedit routing whenever this text field gains/loses focus.
+    void set_focused(bool v) override {
+        bool was = focused();
+        Widget::set_focused(v);
+        if (focused() != was) notify_ime(focused());
+    }
 
 private:
     std::string text_;

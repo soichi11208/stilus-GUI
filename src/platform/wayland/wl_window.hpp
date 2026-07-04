@@ -83,6 +83,7 @@ public:
     // Backend hook used by Window to drive IME enable/disable as focus moves
     // between TextInput widgets in the tree.
     void ime_set_enabled(bool);
+    void set_ime_enabled(bool enabled) override { ime_set_enabled(enabled); }
 private:
 
 private:

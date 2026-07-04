@@ -969,6 +969,11 @@ void Window::setup_seat_(uint32_t caps) {
         wl::Message m(seat_, wl::wl_seat_req::get_keyboard);
         m.new_id(keyboard_);
         d_.send(m);
+        // wl_keyboard.keymap is the only inbound event that carries an fd —
+        // register it so Display routes the SCM_RIGHTS fd here specifically
+        // instead of handing it to whichever event happens to dispatch first
+        // out of the same recvmsg batch.
+        d_.register_fd_message(keyboard_, wl::wl_keyboard_evt::keymap);
         d_.set_handler(keyboard_,
             [this](wl::ObjectId, uint16_t op, const uint8_t* pl, size_t n,
                    const int* fds, size_t nfds) {
@@ -1313,22 +1318,26 @@ void Window::text_input_disable_() {
 void Window::on_text_input_event_(uint16_t op, const uint8_t* pl, size_t n) {
     if (!event_cb_) return;
     wl::Reader r{pl, n};
+    // Only zwp_text_input_v3.done carries a serial. The other events
+    // (enter/leave/preedit_string/commit_string/delete_surrounding_text)
+    // do not — an earlier version of this file consumed a phantom serial
+    // for every event. It was silently harmless for enter/leave (both
+    // just carry a surface object id we discard), but for preedit_string
+    // it shifted the reads: the phantom `serial` ate the string's
+    // 4-byte length prefix, then the string's UTF-8 first four bytes
+    // were read AS the length. Anything non-ASCII (e.g. fcitx5-mozc's
+    // 「あ」= 0xE3 0x81 0x82) came out as ~8 MiB, sending the reader off
+    // the end of the buffer → SIGSEGV.
     switch (op) {
     case wl::zwp_text_input_v3_evt::enter: {
-        // Text input entered our surface
-        r.u32(); // serial
+        r.u32();   // surface object id, discarded
         break;
     }
     case wl::zwp_text_input_v3_evt::leave: {
-        // Text input left our surface - clear preedit state
-        r.u32(); // serial
+        r.u32();   // surface object id, discarded
         break;
     }
     case wl::zwp_text_input_v3_evt::preedit_string: {
-        // IME composition (preedit) text. The text-input-v3 protocol carries
-        // cursor_begin/cursor_end as byte offsets into the preedit string
-        // (or both -1 to hide the cursor).
-        r.u32(); // serial
         std::string_view text = r.string();
         int32_t cb = r.i32();
         int32_t ce = r.i32();
@@ -1342,15 +1351,11 @@ void Window::on_text_input_event_(uint16_t op, const uint8_t* pl, size_t n) {
         break;
     }
     case wl::zwp_text_input_v3_evt::commit_string: {
-        // IME committed text
-        r.u32(); // serial
         std::string_view text = r.string();
-
         if (!text.empty()) {
             Event e;
             e.type = Event::Type::TextInput;
             e.text = std::string(text);
-            // For single-codepoint text, surface the codepoint too.
             e.codepoint = 0;
             if (text.size() <= 4) {
                 const char* p = text.data();
@@ -1361,11 +1366,6 @@ void Window::on_text_input_event_(uint16_t op, const uint8_t* pl, size_t n) {
         break;
     }
     case wl::zwp_text_input_v3_evt::delete_surrounding_text: {
-        // IME requests deletion of surrounding text. Approximated by emitting
-        // KeyDown(Backspace) events; widgets that don't subscribe simply
-        // ignore them. (Proper surrounding-text editing would need a richer
-        // widget protocol — deferred until we have one.)
-        r.u32(); // serial
         int32_t before_length = r.i32();
         r.i32();                 // after_length unused
         for (int i = 0; i < before_length; ++i) {
@@ -1377,8 +1377,7 @@ void Window::on_text_input_event_(uint16_t op, const uint8_t* pl, size_t n) {
         break;
     }
     case wl::zwp_text_input_v3_evt::done: {
-        // End of IME event sequence
-        r.u32(); // serial
+        r.u32();   // serial (only event that actually carries one)
         break;
     }
     default: break;
@@ -1469,6 +1468,9 @@ void Window::clipboard_set_text(std::string_view utf8) {
 
     // Create a fresh source and offer our single MIME type on it.
     wl::ObjectId src = d_.new_id();
+    // wl_data_source.send carries the target pipe fd; register early so
+    // Display routes it correctly (same reason as wl_keyboard.keymap).
+    d_.register_fd_message(src, wl::wl_data_source_evt::send);
     {
         wl::Message m(data_device_manager_,
                       wl::wl_data_device_manager_req::create_data_source);

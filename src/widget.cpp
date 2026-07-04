@@ -18,6 +18,14 @@ void Widget::invalidate(Rect r) {
     }
 }
 
+void Widget::notify_ime(bool enabled) {
+    if (root_notify_) {
+        static_cast<detail::WindowImpl*>(root_notify_)->set_ime_enabled(enabled);
+    } else if (parent_) {
+        parent_->notify_ime(enabled);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Flex
 // ---------------------------------------------------------------------------

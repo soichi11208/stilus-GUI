@@ -48,6 +48,12 @@ public:
     virtual void        clipboard_set_text(std::string_view) {}
     virtual std::string clipboard_get_text() { return {}; }
 
+    // Turn IME preedit/commit routing on for this surface. Called from
+    // TextInput::set_focused so the compositor's text-input protocol
+    // (Wayland zwp_text_input_v3) is armed while a text field has focus.
+    // Backends without an IME hook may leave this as a no-op.
+    virtual void set_ime_enabled(bool /*enabled*/) {}
+
     // Popup factory. Anchor rect is in this window's logical coords. Backend
     // returns nullptr if it can't create the popup (missing globals etc).
     virtual std::unique_ptr<PopupImpl> create_popup(Rect /*anchor*/,

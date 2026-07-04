@@ -16,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace stilus::wl {
@@ -359,6 +360,14 @@ public:
     void set_handler(ObjectId id, EventFn fn);
     void remove_handler(ObjectId id);
 
+    // Declare that (object, opcode) is expected to carry an out-of-band fd
+    // (SCM_RIGHTS). Handlers are called with the correct fd for these; every
+    // other message gets nfds=0. Without this, we can't tell fd-consuming
+    // events from unrelated ones sitting next to them in the same recvmsg
+    // batch, and the fd gets handed to whichever event dispatches first —
+    // exactly the bug we hit with wl_keyboard.keymap.
+    void register_fd_message(ObjectId id, uint16_t opcode);
+
     // Send a fully-built message (consumes fds into sendmsg).
     bool send(Message& m);
 
@@ -380,6 +389,9 @@ private:
     int fd_ = -1;
     ObjectId next_id_ = 2;
     std::unordered_map<ObjectId, EventFn> handlers_;
+
+    // (object_id << 16) | opcode  →  yes, this message wants an fd.
+    std::unordered_set<uint64_t> fd_messages_;
 
     std::vector<uint8_t> rx_buf_;
     std::vector<int>     rx_fds_;

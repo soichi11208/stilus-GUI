@@ -123,6 +123,10 @@ void Display::set_handler(ObjectId id, EventFn fn) {
 
 void Display::remove_handler(ObjectId id) { handlers_.erase(id); }
 
+void Display::register_fd_message(ObjectId id, uint16_t opcode) {
+    fd_messages_.insert((uint64_t(id) << 16) | opcode);
+}
+
 bool Display::send(Message& m) {
     if (fd_ < 0) return false;
     const auto& buf = m.data();
@@ -224,13 +228,19 @@ bool Display::dispatch_from_buf() {
 
         auto it = handlers_.find(sender);
         if (it != handlers_.end()) {
-            // Pass all currently-queued fds to the handler; the handler is
-            // expected to consume exactly the ones it needs. To keep life
-            // simple here, we hand over the full pending queue and clear it.
-            std::vector<int> fds_copy = rx_fds_;
-            rx_fds_.clear();
-            it->second(sender, opcode, payload, payload_ln,
-                       fds_copy.data(), fds_copy.size());
+            // Only messages explicitly declared as fd-carrying receive fds;
+            // everything else gets nfds=0. This matters when a single
+            // recvmsg batches an fd-carrying event (e.g. wl_keyboard.keymap)
+            // together with unrelated events — without this filtering, the
+            // first-dispatched event eats the fd meant for the later one.
+            uint64_t key = (uint64_t(sender) << 16) | opcode;
+            if (fd_messages_.count(key) && !rx_fds_.empty()) {
+                int fd = rx_fds_.front();
+                rx_fds_.erase(rx_fds_.begin());
+                it->second(sender, opcode, payload, payload_ln, &fd, 1);
+            } else {
+                it->second(sender, opcode, payload, payload_ln, nullptr, 0);
+            }
         } else {
             // Default: warn about unhandled object events. Useful during bring-up.
             // For unknown globals we will just ignore: comment out if noisy.

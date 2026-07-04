@@ -58,6 +58,12 @@ public:
     void invalidate();
     void invalidate(Rect r);
 
+    // Ask the window to turn IME preedit/commit routing on or off. Climbs
+    // the parent chain to find the root_notify_ slot (mirroring how
+    // invalidate propagates), then calls WindowImpl::set_ime_enabled.
+    // No-op if no root is attached yet.
+    void notify_ime(bool enabled);
+
     // Accessors
     Rect   rect() const { return rect_; }
     Widget* parent() const { return parent_; }
